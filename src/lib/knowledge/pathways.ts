@@ -1,0 +1,703 @@
+// Wayfinder Knowledge Base — Immigration Pathways
+//
+// Each pathway is a curated, versioned representation of a real legal route.
+// Requirements are deterministic predicates the policy engine evaluates against
+// a MobilityState. Downstream transitions model the state graph (entry status →
+// PR → citizenship). Figures are USD-approximated for cross-country comparison;
+// each requirement cites the authoritative evidence backing it.
+
+import type { Pathway } from '@/lib/domain/types'
+
+export const PATHWAYS: Pathway[] = [
+  // ========================================================================
+  // 1. GERMANY — EU Blue Card
+  // ========================================================================
+  {
+    id: 'de-blue-card',
+    countryCode: 'DE',
+    countryName: 'Germany',
+    name: 'EU Blue Card',
+    category: 'eu_blue_card',
+    tagline: 'High-skill residence with the fastest PR path in the EU.',
+    leadsTo: 'work_residence',
+    requirements: [
+      {
+        id: 'de-bc-req-degree',
+        label: 'Recognized higher-education degree',
+        kind: 'degree_recognized',
+        params: { in: 'DE' },
+        evidenceIds: ['ev-de-bc-makeit', 'ev-de-degree-anabin'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'de-bc-req-offer',
+        label: 'Binding job offer from a German employer',
+        kind: 'has_employer_offer',
+        params: {},
+        evidenceIds: ['ev-de-bc-makeit'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'de-bc-req-salary',
+        label: 'Salary ≥ threshold (USD ~49k shortage / ~61k general)',
+        kind: 'min_salary_usd',
+        params: { amount: 61000, reduced_for_shortage: 49000 },
+        evidenceIds: ['ev-de-bc-makeit', 'ev-de-bc-shortage'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'de-bc-req-occupation',
+        label: 'Qualifying skilled occupation',
+        kind: 'occupation_in',
+        params: {
+          categories: ['software_it', 'engineering', 'finance', 'healthcare', 'other'],
+        },
+        evidenceIds: ['ev-de-bc-makeit'],
+        enablerAddressable: false,
+        criticality: 'hard',
+      },
+    ],
+    downstream: [
+      {
+        id: 'de-bc-tr-pr',
+        from: 'EU Blue Card residence',
+        to: 'Settlement permit (permanent residence)',
+        durationMonths: 27,
+        conditions: [
+          'Employment commensurate with qualification maintained',
+          'Contributions to statutory pension ~33 months (or 21 with B1 German)',
+        ],
+        evidenceIds: ['ev-de-bc-makeit'],
+        reversible: false,
+      },
+      {
+        id: 'de-bc-tr-cit',
+        from: 'Settlement permit (PR)',
+        to: 'German citizenship',
+        durationMonths: 33,
+        conditions: [
+          '5 years residence (3 with C1 German + integration achievements)',
+          'Ability to support oneself; no criminal record',
+          'Declaration of loyalty; dual citizenship now permitted (2024 reform)',
+        ],
+        evidenceIds: ['ev-de-naturalization'],
+        reversible: false,
+      },
+    ],
+    estimatedCostUSD: 1200,
+    processingTimeMonths: 2,
+    validityMonths: 48,
+    requiresThirdParty: true,
+    evidenceIds: ['ev-de-bc-makeit', 'ev-de-bc-shortage', 'ev-de-degree-anabin', 'ev-de-naturalization'],
+    riskNotes: 'Strong policy stability; 2024 reforms improved the citizenship trajectory. Salary threshold updates annually.',
+    shortageOccupationFriendly: true,
+    effectiveFrom: '2024-06-27',
+    policyVersion: '2024.11.1',
+  },
+
+  // ========================================================================
+  // 2. GERMANY — Chancenkarte (Opportunity Card)
+  // ========================================================================
+  {
+    id: 'de-chancenkarte',
+    countryCode: 'DE',
+    countryName: 'Germany',
+    name: 'Chancenkarte (Opportunity Card)',
+    category: 'job_seeker',
+    tagline: 'Points-based job-seeker residence; arrive in Germany, then convert to work.',
+    leadsTo: 'temporary_residence',
+    requirements: [
+      {
+        id: 'de-ch-req-degree',
+        label: 'Recognized degree or 2-year vocational training + experience',
+        kind: 'degree_recognized',
+        params: { in: 'DE' },
+        evidenceIds: ['ev-de-chance-makeit', 'ev-de-chance-points'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'de-ch-req-points',
+        label: '≥ 6 points under the Chancenkarte points system',
+        kind: 'points_threshold',
+        params: { system: 'chancenkarte', min: 6 },
+        evidenceIds: ['ev-de-chance-points'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'de-ch-req-funds',
+        label: 'Proof of means to support the search (≈ USD 12,000 / year)',
+        kind: 'min_savings_usd',
+        params: { amount: 12000 },
+        evidenceIds: ['ev-de-chance-makeit'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'de-ch-req-language',
+        label: 'English or German at B2 (points bonus); not strictly required',
+        kind: 'language_or',
+        params: {
+          alternatives: [
+            { language: 'de', level: 'B2' },
+            { language: 'en', level: 'B2' },
+          ],
+        },
+        evidenceIds: ['ev-de-chance-points'],
+        enablerAddressable: true,
+        criticality: 'soft',
+      },
+    ],
+    downstream: [
+      {
+        id: 'de-ch-tr-bc',
+        from: 'Chancenkarte (job-seeker)',
+        to: 'EU Blue Card or skilled-worker residence',
+        durationMonths: 9,
+        conditions: ['Found qualifying employment within the 12-month validity'],
+        evidenceIds: ['ev-de-chance-makeit', 'ev-de-bc-makeit'],
+        reversible: false,
+      },
+      {
+        id: 'de-ch-tr-pr',
+        from: 'Skilled-worker residence',
+        to: 'Settlement permit (PR)',
+        durationMonths: 33,
+        conditions: ['Continuous employment', 'B1 German for 21-month fast track'],
+        evidenceIds: ['ev-de-bc-makeit'],
+        reversible: false,
+      },
+    ],
+    estimatedCostUSD: 900,
+    processingTimeMonths: 3,
+    validityMonths: 12,
+    requiresThirdParty: false,
+    evidenceIds: ['ev-de-chance-makeit', 'ev-de-chance-points'],
+    riskNotes: 'New programme (June 2024); converting to a work residence within 12 months is the critical dependency. Lower initial commitment than Blue Card.',
+    shortageOccupationFriendly: true,
+    effectiveFrom: '2024-06-01',
+    policyVersion: '2024.11.1',
+  },
+
+  // ========================================================================
+  // 3. PORTUGAL — D7 (passive / recurring income)
+  // ========================================================================
+  {
+    id: 'pt-d7',
+    countryCode: 'PT',
+    countryName: 'Portugal',
+    name: 'D7 Residence Visa',
+    category: 'passive_income',
+    tagline: 'For remote workers and income holders; fast 5-year path to citizenship.',
+    leadsTo: 'temporary_residence',
+    requirements: [
+      {
+        id: 'pt-d7-req-income',
+        label: 'Recurring income ≥ Portuguese minimum wage (~USD 890/mo)',
+        kind: 'min_passive_income_usd_monthly',
+        params: { amount: 890 },
+        evidenceIds: ['ev-pt-d7-vistos'],
+        enablerAddressable: false,
+        criticality: 'hard',
+      },
+      {
+        id: 'pt-d7-req-savings',
+        label: 'Savings covering a full year of residence (~USD 12,000)',
+        kind: 'min_savings_usd',
+        params: { amount: 12000 },
+        evidenceIds: ['ev-pt-d7-vistos'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'pt-d7-req-remote',
+        label: 'Remote-capable work / recurring income source',
+        kind: 'remote_work_capable',
+        params: {},
+        evidenceIds: ['ev-pt-d7-vistos'],
+        enablerAddressable: false,
+        criticality: 'soft',
+      },
+      {
+        id: 'pt-d7-req-accommodation',
+        label: 'Proof of accommodation in Portugal (NIF + bank account)',
+        kind: 'health_insurance',
+        params: {},
+        evidenceIds: ['ev-pt-d7-vistos'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+    ],
+    downstream: [
+      {
+        id: 'pt-d7-tr-renew',
+        from: 'D7 temporary residence (2y)',
+        to: 'Renewed residence permit (3y)',
+        durationMonths: 24,
+        conditions: ['Maintain minimum income', 'Physical presence ≥ 183 days/yr'],
+        evidenceIds: ['ev-pt-d7-vistos'],
+        reversible: true,
+      },
+      {
+        id: 'pt-d7-tr-cit',
+        from: '5 years legal residence',
+        to: 'Portuguese citizenship',
+        durationMonths: 36,
+        conditions: ['A2 Portuguese', 'Clean criminal record', 'Ties to Portugal'],
+        evidenceIds: ['ev-pt-citizenship'],
+        reversible: false,
+      },
+    ],
+    estimatedCostUSD: 1100,
+    processingTimeMonths: 4,
+    validityMonths: 24,
+    requiresThirdParty: false,
+    evidenceIds: ['ev-pt-d7-vistos', 'ev-pt-citizenship'],
+    riskNotes: 'AIMA processing backlogs have varied; income must be recurring and demonstrable. No employer needed — strong fit for remote workers.',
+    effectiveFrom: '2023-01-01',
+    policyVersion: '2024.11.1',
+  },
+
+  // ========================================================================
+  // 4. PORTUGAL — D2 / Startup Visa
+  // ========================================================================
+  {
+    id: 'pt-startup-visa',
+    countryCode: 'PT',
+    countryName: 'Portugal',
+    name: 'D2 / Startup Visa',
+    category: 'startup_visa',
+    tagline: 'Founder route: certified innovative venture or incubator-backed company.',
+    leadsTo: 'temporary_residence',
+    requirements: [
+      {
+        id: 'pt-sv-req-plan',
+        label: 'Innovative, scalable business plan',
+        kind: 'business_plan',
+        params: {},
+        evidenceIds: ['ev-pt-startup-iapmei', 'ev-pt-d2-vistos'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'pt-sv-req-incubator',
+        label: 'IAPMEI project certification OR certified incubator hosting',
+        kind: 'designated_incubator_support',
+        params: {},
+        evidenceIds: ['ev-pt-startup-iapmei'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'pt-sv-req-funds',
+        label: 'Means of subsistence (~USD 10,000)',
+        kind: 'min_savings_usd',
+        params: { amount: 10000 },
+        evidenceIds: ['ev-pt-d2-vistos'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+    ],
+    downstream: [
+      {
+        id: 'pt-sv-tr-renew',
+        from: 'D2 / Startup Visa residence (2y)',
+        to: 'Renewed residence (3y)',
+        durationMonths: 24,
+        conditions: ['Venture progress per IAPMEI milestones', 'Physical presence'],
+        evidenceIds: ['ev-pt-startup-iapmei'],
+        reversible: true,
+      },
+      {
+        id: 'pt-sv-tr-cit',
+        from: '5 years legal residence',
+        to: 'Portuguese citizenship',
+        durationMonths: 36,
+        conditions: ['A2 Portuguese', 'Clean record'],
+        evidenceIds: ['ev-pt-citizenship'],
+        reversible: false,
+      },
+    ],
+    estimatedCostUSD: 1500,
+    processingTimeMonths: 5,
+    validityMonths: 24,
+    requiresThirdParty: true,
+    evidenceIds: ['ev-pt-startup-iapmei', 'ev-pt-d2-vistos', 'ev-pt-citizenship'],
+    riskNotes: 'Project certification is the gate. Low capital requirement relative to investor visas.',
+    effectiveFrom: '2023-01-01',
+    policyVersion: '2024.11.1',
+  },
+
+  // ========================================================================
+  // 5. CANADA — Express Entry (Federal Skilled Worker)
+  // ========================================================================
+  {
+    id: 'ca-express-entry',
+    countryCode: 'CA',
+    countryName: 'Canada',
+    name: 'Express Entry (Federal Skilled Worker)',
+    category: 'skilled_worker',
+    tagline: 'Points-based direct-to-PR for skilled workers; strongest citizenship trajectory in the set.',
+    leadsTo: 'permanent_residence',
+    requirements: [
+      {
+        id: 'ca-ee-req-edu',
+        label: 'Post-secondary education (ECA assessed)',
+        kind: 'min_education',
+        params: { level: 'bachelors' },
+        evidenceIds: ['ev-ca-ee-ircc'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'ca-ee-req-credential',
+        label: 'Educational Credential Assessment (ECA) by a designated body',
+        kind: 'degree_recognized',
+        params: { in: 'CA' },
+        evidenceIds: ['ev-ca-ee-ircc'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'ca-ee-req-language',
+        label: 'CLB 7 (≈ CEFR B2) in English or French',
+        kind: 'language_or',
+        params: {
+          alternatives: [
+            { language: 'en', level: 'B2' },
+            { language: 'fr', level: 'B2' },
+          ],
+        },
+        evidenceIds: ['ev-ca-ee-ircc'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'ca-ee-req-experience',
+        label: '≥ 1 year skilled work experience (NOC TEER 0/1/2/3)',
+        kind: 'min_years_experience',
+        params: { years: 1 },
+        evidenceIds: ['ev-ca-ee-ircc'],
+        enablerAddressable: false,
+        criticality: 'hard',
+      },
+      {
+        id: 'ca-ee-req-points',
+        label: '67/100 FSW grid pass mark + competitive CRS in the pool',
+        kind: 'points_threshold',
+        params: { system: 'fsw-crs', min: 67 },
+        evidenceIds: ['ev-ca-ee-ircc', 'ev-ca-ee-crs'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'ca-ee-req-funds',
+        label: 'Settlement funds (~USD 11,000) or valid job offer',
+        kind: 'settlement_funds_usd',
+        params: { amount: 11000 },
+        evidenceIds: ['ev-ca-ee-crs'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+    ],
+    downstream: [
+      {
+        id: 'ca-ee-tr-pr',
+        from: 'Express Entry invitation',
+        to: 'Permanent residence (landed)',
+        durationMonths: 8,
+        conditions: ['IT received in a draw', 'Admissibility (medical, criminal) cleared'],
+        evidenceIds: ['ev-ca-ee-ircc'],
+        reversible: false,
+      },
+      {
+        id: 'ca-ee-tr-cit',
+        from: 'Permanent residence',
+        to: 'Canadian citizenship',
+        durationMonths: 36,
+        conditions: ['1,095 days physical presence in 5 years', 'Language (CLB 4) if 18-54'],
+        evidenceIds: ['ev-ca-citizenship'],
+        reversible: false,
+      },
+    ],
+    estimatedCostUSD: 2400,
+    processingTimeMonths: 8,
+    validityMonths: 0,
+    requiresThirdParty: false,
+    evidenceIds: ['ev-ca-ee-ircc', 'ev-ca-ee-crs', 'ev-ca-citizenship'],
+    riskNotes: 'CRS cutoff fluctuates with draw composition; program-specific (STEM, French, healthcare) draws have lowered cutoffs. PR is granted directly — no intermediate status.',
+    shortageOccupationFriendly: true,
+    effectiveFrom: '2024-01-01',
+    policyVersion: '2024.11.1',
+  },
+
+  // ========================================================================
+  // 6. CANADA — Start-Up Visa
+  // ========================================================================
+  {
+    id: 'ca-startup-visa',
+    countryCode: 'CA',
+    countryName: 'Canada',
+    name: 'Start-Up Visa Program',
+    category: 'startup_visa',
+    tagline: 'Founder route to Canadian PR via a designated incubator / angel / VC.',
+    leadsTo: 'permanent_residence',
+    requirements: [
+      {
+        id: 'ca-suv-req-support',
+        label: 'Letter of Support from a designated organisation',
+        kind: 'designated_incubator_support',
+        params: {},
+        evidenceIds: ['ev-ca-suv-ircc'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'ca-suv-req-language',
+        label: 'CLB 5 (≈ CEFR B1) in English or French',
+        kind: 'language_or',
+        params: {
+          alternatives: [
+            { language: 'en', level: 'B1' },
+            { language: 'fr', level: 'B1' },
+          ],
+        },
+        evidenceIds: ['ev-ca-suv-ircc'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'ca-suv-req-funds',
+        label: 'Settlement funds (~USD 11,000 single)',
+        kind: 'settlement_funds_usd',
+        params: { amount: 11000 },
+        evidenceIds: ['ev-ca-suv-ircc'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'ca-suv-req-plan',
+        label: 'Qualifying, innovative business venture',
+        kind: 'business_plan',
+        params: {},
+        evidenceIds: ['ev-ca-suv-ircc'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+    ],
+    downstream: [
+      {
+        id: 'ca-suv-tr-pr',
+        from: 'Letter of Support + work permit',
+        to: 'Permanent residence',
+        durationMonths: 30,
+        conditions: ['Active role in the venture', 'Admissibility cleared'],
+        evidenceIds: ['ev-ca-suv-ircc'],
+        reversible: false,
+      },
+      {
+        id: 'ca-suv-tr-cit',
+        from: 'Permanent residence',
+        to: 'Canadian citizenship',
+        durationMonths: 36,
+        conditions: ['1,095 days physical presence in 5 years'],
+        evidenceIds: ['ev-ca-citizenship'],
+        reversible: false,
+      },
+    ],
+    estimatedCostUSD: 3200,
+    processingTimeMonths: 31,
+    validityMonths: 0,
+    requiresThirdParty: true,
+    evidenceIds: ['ev-ca-suv-ircc', 'ev-ca-citizenship'],
+    riskNotes: 'Processing is long (~2.5y to PR); a designated incubator Letter of Support is the binding dependency. PR is the direct outcome.',
+    effectiveFrom: '2024-01-01',
+    policyVersion: '2024.11.1',
+  },
+
+  // ========================================================================
+  // 7. ESTONIA — Startup Visa
+  // ========================================================================
+  {
+    id: 'ee-startup-visa',
+    countryCode: 'EE',
+    countryName: 'Estonia',
+    name: 'Estonian Startup Visa',
+    category: 'startup_visa',
+    tagline: 'Founder-friendly EU entry via Startup Committee approval; digital-first administration.',
+    leadsTo: 'temporary_residence',
+    requirements: [
+      {
+        id: 'ee-sv-req-plan',
+        label: 'Startup approved by the Startup Committee (novel + scalable)',
+        kind: 'business_plan',
+        params: {},
+        evidenceIds: ['ev-ee-sv-startupestonia'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'ee-sv-req-funds',
+        label: 'Proof of means (~USD 4,400 / month of stay for short-term; or business capacity)',
+        kind: 'min_savings_usd',
+        params: { amount: 8000 },
+        evidenceIds: ['ev-ee-sv-startupestonia'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+    ],
+    downstream: [
+      {
+        id: 'ee-sv-tr-residence',
+        from: 'Startup Visa / startup residence',
+        to: 'Temporary residence for entrepreneurship',
+        durationMonths: 12,
+        conditions: ['Company registered in Estonia', 'Real business activity'],
+        evidenceIds: ['ev-ee-sv-startupestonia'],
+        reversible: true,
+      },
+      {
+        id: 'ee-sv-tr-cit',
+        from: '8 years permanent residence',
+        to: 'Estonian citizenship',
+        durationMonths: 96,
+        conditions: ['B1 Estonian', 'Permanent residence for last 3 years'],
+        evidenceIds: ['ev-ee-citizenship'],
+        reversible: false,
+      },
+    ],
+    estimatedCostUSD: 700,
+    processingTimeMonths: 2,
+    validityMonths: 12,
+    requiresThirdParty: false,
+    evidenceIds: ['ev-ee-sv-startupestonia', 'ev-ee-citizenship'],
+    riskNotes: 'Low cost and fast entry, but citizenship path is the longest in the set (8y + language). Strong as a stepping stone into the EU.',
+    effectiveFrom: '2023-01-01',
+    policyVersion: '2024.11.1',
+  },
+
+  // ========================================================================
+  // 8. UK — Global Talent
+  // ========================================================================
+  {
+    id: 'uk-global-talent',
+    countryCode: 'UK',
+    countryName: 'United Kingdom',
+    name: 'Global Talent visa',
+    category: 'talent_endorsement',
+    tagline: 'Endorsement-based route for established or emerging leaders in digital technology.',
+    leadsTo: 'work_residence',
+    requirements: [
+      {
+        id: 'uk-gt-req-endorsement',
+        label: 'Tech Nation endorsement (Exceptional Talent or Promise)',
+        kind: 'endorsement_body',
+        params: { body: 'tech_nation' },
+        evidenceIds: ['ev-uk-gt-govuk', 'ev-uk-gt-technation'],
+        enablerAddressable: true,
+        criticality: 'hard',
+      },
+      {
+        id: 'uk-gt-req-evidence',
+        label: 'Documented innovation + recognition (mandatory + optional criteria)',
+        kind: 'business_plan',
+        params: {},
+        evidenceIds: ['ev-uk-gt-technation'],
+        enablerAddressable: false,
+        criticality: 'hard',
+      },
+    ],
+    downstream: [
+      {
+        id: 'uk-gt-tr-ilr',
+        from: 'Global Talent visa',
+        to: 'Indefinite Leave to Remain (ILR)',
+        durationMonths: 36,
+        conditions: ['Talent: 3y to ILR; Promise: 5y to ILR', 'Continuous endorsement-compliant activity'],
+        evidenceIds: ['ev-uk-gt-govuk'],
+        reversible: false,
+      },
+      {
+        id: 'uk-gt-tr-cit',
+        from: 'ILR',
+        to: 'British citizenship',
+        durationMonths: 12,
+        conditions: ['12 months after ILR', 'Life in the UK test', 'B1 English'],
+        evidenceIds: ['ev-uk-gt-govuk'],
+        reversible: false,
+      },
+    ],
+    estimatedCostUSD: 1000,
+    processingTimeMonths: 3,
+    validityMonths: 60,
+    requiresThirdParty: true,
+    evidenceIds: ['ev-uk-gt-govuk', 'ev-uk-gt-technation'],
+    riskNotes: 'Endorsement is the binding gate and is competitive. No employer sponsorship needed; flexible work/employer changes permitted.',
+    effectiveFrom: '2024-01-01',
+    policyVersion: '2024.11.1',
+  },
+
+  // ========================================================================
+  // 9. UAE — Virtual Working Program
+  // ========================================================================
+  {
+    id: 'uae-virtual-work',
+    countryCode: 'AE',
+    countryName: 'United Arab Emirates',
+    name: 'Virtual Working Programme',
+    category: 'digital_nomad',
+    tagline: 'One-year renewable residence for remote workers; tax-free income. No PR/citizenship path.',
+    leadsTo: 'temporary_residence',
+    requirements: [
+      {
+        id: 'uae-vw-req-income',
+        label: 'Remote income ≥ USD 3,500/mo (single) / 5,000 (dependents)',
+        kind: 'min_passive_income_usd_monthly',
+        params: { amount: 3500 },
+        evidenceIds: ['ev-ae-vwp-icp'],
+        enablerAddressable: false,
+        criticality: 'hard',
+      },
+      {
+        id: 'uae-vw-req-remote',
+        label: 'Employer or business based outside the UAE',
+        kind: 'remote_work_capable',
+        params: {},
+        evidenceIds: ['ev-ae-vwp-icp'],
+        enablerAddressable: false,
+        criticality: 'hard',
+      },
+    ],
+    downstream: [
+      {
+        id: 'uae-vw-tr-renew',
+        from: 'Virtual Work residence (1y)',
+        to: 'Renewed virtual work residence',
+        durationMonths: 12,
+        conditions: ['Maintain income threshold', 'Renew annually'],
+        evidenceIds: ['ev-ae-vwp-icp'],
+        reversible: true,
+      },
+    ],
+    estimatedCostUSD: 650,
+    processingTimeMonths: 1,
+    validityMonths: 12,
+    requiresThirdParty: false,
+    evidenceIds: ['ev-ae-vwp-icp'],
+    riskNotes: 'Fast, low-friction entry with strong income retention. Crucially: no path to PR or citizenship under current law — useful as an earning/optionality stop, not a terminal destination.',
+    effectiveFrom: '2023-01-01',
+    policyVersion: '2024.11.1',
+  },
+]
+
+export function getPathway(id: string): Pathway | undefined {
+  return PATHWAYS.find((p) => p.id === id)
+}
+
+export function getPathwaysForCountry(countryCode: string): Pathway[] {
+  return PATHWAYS.filter((p) => p.countryCode === countryCode)
+}

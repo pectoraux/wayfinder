@@ -1,0 +1,109 @@
+// Wayfinder — Prisma schema
+// The immigration KNOWLEDGE BASE (countries, pathways, policy rules, evidence,
+// enablers) lives in versioned TypeScript modules under src/lib/knowledge so it
+// is deterministic and reproducible. This database stores only USER-SCOPED data:
+// mobility-state snapshots, intent versions, reproducible decision records,
+// counterfactual scenarios, and consent.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// A person using Wayfinder. Identity is separated from the mobility profile
+/// wherever possible — we keep an opaque internal handle, not PII, by default.
+model Person {
+  id          String   @id @default(cuid())
+  handle      String?  // optional self-chosen label; never used for matching
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  states      MobilityStateSnapshot[]
+  intents     IntentRecord[]
+  decisions   DecisionRecord[]
+  scenarios   Scenario[]
+  consents    ConsentRecord[]
+}
+
+/// A point-in-time snapshot of a person's real-world mobility state.
+/// Never overwritten — append-only for temporal reproducibility.
+model MobilityStateSnapshot {
+  id          String   @id @default(cuid())
+  personId    String
+  person      Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  version     Int      @default(1)
+  /// Full structured MobilityState as JSON (see src/lib/domain/types.ts)
+  state       Json
+  source      String   @default("intake") // "intake" | "edit" | "document" | "simulated"
+  createdAt   DateTime @default(now())
+
+  @@index([personId])
+}
+
+/// A versioned record of the user's expressed intent + inferred objectives.
+model IntentRecord {
+  id          String   @id @default(cuid())
+  personId    String
+  person      Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  version     Int      @default(1)
+  rawInput    String   // the free-form text the user typed
+  intent      Json     // structured Intent object
+  createdAt   DateTime @default(now())
+
+  @@index([personId])
+}
+
+/// A reproducible decision record. Stores the FULL computed plan as JSON plus a
+/// reference to the policy version that produced it, so the recommendation can
+/// be reconstructed even after policy changes. NEVER overwritten.
+model DecisionRecord {
+  id              String   @id @default(cuid())
+  personId        String
+  person          Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  stateVersion    Int
+  intentVersion   Int
+  policyVersion   String   // knowledge-base semantic version
+  policyHash      String   // hash of the policy snapshot used
+  asOfDate        DateTime
+  plan            Json     // full MobilityPlan (routes, frontier, enablers, etc.)
+  createdAt       DateTime @default(now())
+
+  @@index([personId])
+}
+
+/// A counterfactual "What if?" simulation: modified state -> recomputed plan.
+model Scenario {
+  id            String   @id @default(cuid())
+  personId      String
+  person        Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  label         String   // e.g. "If I learn German to B1"
+  baseStateVersion  Int
+  modifiedState Json     // the hypothesized MobilityState
+  deltaSummary  String   // human description of the change
+  plan          Json     // recomputed MobilityPlan
+  frontierDelta Json     // change in mobility frontier vs baseline
+  createdAt     DateTime @default(now())
+
+  @@index([personId])
+}
+
+/// Explicit consent records. The marketplace must check consent before exposing
+/// any profile information to an enabler.
+model ConsentRecord {
+  id          String   @id @default(cuid())
+  personId    String
+  person      Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  purpose     String   // e.g. "employer_intro" | "incubator_intro"
+  recipient   String   // enabler id / category
+  dataFields  String   // comma-separated field names shared
+  granted     Boolean  @default(false)
+  durationDays Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([personId])
+}
