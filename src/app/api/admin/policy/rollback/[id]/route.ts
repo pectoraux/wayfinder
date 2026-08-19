@@ -63,11 +63,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     // Invalidate the runtime policy cache so the rollback takes effect
     invalidateRuntimePolicyCache()
 
+    // Re-run propagation to restore the original runtime behavior.
+    // The propagation job is idempotent — for a ROLLED_BACK publication it
+    // returns wasNoOp=true (no active overlay to propagate).
+    const { processPolicyPublication } = await import('@/lib/policy/propagation')
+    const propagation = await processPolicyPublication(id)
+
     return NextResponse.json({
       ok: true,
       publicationId: id,
       status: 'ROLLED_BACK',
       rolledBackAt: updated.rolledBackAt,
+      propagation,
     })
   } catch (err) {
     console.error('[/api/admin/policy/rollback]', err)

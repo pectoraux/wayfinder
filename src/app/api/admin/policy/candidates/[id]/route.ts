@@ -134,6 +134,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       const { invalidateRuntimePolicyCache } = await import('@/lib/policy/runtime-resolver')
       invalidateRuntimePolicyCache()
 
+      // WIRE: invoke the policy propagation pipeline (idempotent).
+      // This recomputes affected plans + creates alerts automatically.
+      const { processPolicyPublication } = await import('@/lib/policy/propagation')
+      const propagation = await processPolicyPublication(publication.id, {
+        candidateFactId: candidate.id,
+        adminEmail: session.user?.email ?? 'unknown',
+      })
+
       await db.adminAuditRecord.create({
         data: {
           adminId: (session.user as any).id ?? 'unknown',
@@ -141,10 +149,20 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           action: 'PUBLISH_POLICY_VERSION',
           entityId: publication.id,
           entityType: 'PolicyPublication',
-          after: JSON.stringify({ policyVersionId: publication.policyVersionId, hash: publication.contentHash }),
+          after: JSON.stringify({
+            policyVersionId: publication.policyVersionId,
+            hash: publication.contentHash,
+            propagation: {
+              status: propagation.status,
+              affectedPlans: propagation.affectedPlans,
+              alertsCreated: propagation.alertsCreated,
+            },
+          }),
           reason: body.reason,
         },
       })
+
+      return NextResponse.json({ candidate: updated, publication, propagation })
     } catch (e) {
       return NextResponse.json({
         error: 'Candidate approved but publication failed',

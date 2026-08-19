@@ -78,10 +78,11 @@ describe('Runtime overlay resolution', () => {
       changes: [{ entityType: 'requirement', entityId: 'req-de-bc-salary-v1', entityLabel: 'salary', field: 'amount', oldValue: 61000, newValue: 65000 }],
       contentHash: 'h1', createdAt: new Date().toISOString(),
     }
+    // overlay2 omits oldValue so it applies on top of overlay1's result
     const overlay2: PolicyOverlay = {
       id: 'o2', publicationId: 'p2', parentPolicyVersion: 'snap-2024-11',
       jurisdictionId: 'global', effectiveFrom: '2024-01-01', provenance: 'AUTHORITATIVE',
-      changes: [{ entityType: 'requirement', entityId: 'req-de-bc-salary-v1', entityLabel: 'salary', field: 'amount', oldValue: 65000, newValue: 72000 }],
+      changes: [{ entityType: 'requirement', entityId: 'req-de-bc-salary-v1', entityLabel: 'salary', field: 'amount', newValue: 72000 }],
       contentHash: 'h2', createdAt: new Date().toISOString(),
     }
     const snap = await resolveRuntimePolicy({ asOf: '2025-06-01', overlays: [overlay1, overlay2] })
@@ -238,7 +239,7 @@ describe('Alert generation', () => {
     expect(isMaterialImpact('NO_MATERIAL_CHANGE')).toBe(false)
   })
 
-  it('generateAlertCandidates produces alerts only for material impacts', () => {
+  it('generateAlertCandidates produces alerts only for material impacts', async () => {
     const state = exampleState()
     const intent = parseIntentDeterministic('I want to move abroad.')
     const plan = buildPlan(state, intent, [], '2025-06-01')
@@ -262,7 +263,7 @@ describe('Alert generation', () => {
       createdAt: new Date().toISOString(),
     }
 
-    const alerts = generateAlertCandidates(
+    const alerts = await generateAlertCandidates(
       { id: 'pub-test', contentHash: 'h' },
       candidate,
       [{ userId: 'user-1', decisionRecordId: 'dr-1', plan, state, intent }],
@@ -274,7 +275,7 @@ describe('Alert generation', () => {
     }
   })
 
-  it('generateAlertCandidates produces a unique idempotency key per user+publication+plan', () => {
+  it('generateAlertCandidates produces a unique idempotency key per user+publication+plan', async () => {
     const state = exampleState()
     const intent = parseIntentDeterministic('I want to move abroad.')
     const plan = buildPlan(state, intent, [], '2025-06-01')
@@ -286,7 +287,7 @@ describe('Alert generation', () => {
       promptVersion: '1.0', confidence: 0.9, extractionStatus: 'APPROVED',
       createdAt: new Date().toISOString(),
     }
-    const alerts = generateAlertCandidates(
+    const alerts = await generateAlertCandidates(
       { id: 'pub-1', contentHash: 'h' },
       candidate,
       [
@@ -365,13 +366,16 @@ describe('Fail-safe behavior', () => {
     const snap = await resolveRuntimePolicy({ asOf: '2025-06-01', overlays: [] })
     expect(snap.baseSnapshotId).toBe('snap-2024-11')
     expect(snap.activeOverlayIds).toHaveLength(0)
-    // Requirements match the base knowledge
-    expect(snap.requirements.length).toBe(REQUIREMENTS.length)
+    // Requirements match the base SNAPSHOT's entities (not the global array)
+    const { getRequirementsInSnapshot } = await import('@/lib/policy/snapshot')
+    const baseReqs = getRequirementsInSnapshot('snap-2024-11')
+    expect(snap.requirements.length).toBe(baseReqs.length)
   })
 
   it('resolveRuntimePolicySync returns base knowledge synchronously', () => {
     const snap = resolveRuntimePolicySync({ asOf: '2025-06-01' })
     expect(snap.activeOverlayIds).toHaveLength(0)
+    // Sync variant uses global arrays (no snapshot-specific loading)
     expect(snap.requirements.length).toBe(REQUIREMENTS.length)
   })
 

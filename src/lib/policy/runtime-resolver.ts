@@ -29,10 +29,11 @@ import type {
   NormalizedTransition,
   PolicyOverlay,
   PolicyOverlayChange,
+  PolicyProvenance,
   RuntimePolicySnapshot,
 } from './types'
 import { REQUIREMENTS, TRANSITIONS, PROGRAMS } from './knowledge'
-import { getPolicySnapshot } from './snapshot'
+import { getPolicySnapshot, getRequirementsInSnapshot, getProgramsInSnapshot, getTransitionsInSnapshot } from './snapshot'
 import { createHash } from 'crypto'
 
 // ---------------------------------------------------------------------------
@@ -110,6 +111,64 @@ export async function loadActiveOverlays(
     console.warn('[runtime-policy] DB unavailable, falling back to base knowledge only:', e)
     return []
   }
+}
+
+// ---------------------------------------------------------------------------
+// Overlay validation (base-aware — fail closed)
+// ---------------------------------------------------------------------------
+
+/** Validate that an overlay change can be safely applied to the base entities.
+ *  Returns { valid, errors }. Fail closed: if anything is wrong, don't apply. */
+export function validateOverlayAgainstBase(
+  overlay: PolicyOverlay,
+  baseRequirements: NormalizedRequirement[],
+  basePrograms: ImmigrationProgram[],
+  baseTransitions: NormalizedTransition[],
+): { valid: boolean; errors: string[] } {
+  const errors: string[] = []
+
+  for (const change of overlay.changes) {
+    // Entity must exist in base
+    if (change.entityType === 'requirement') {
+      const req = baseRequirements.find((r) => r.id === change.entityId)
+      if (!req) {
+        errors.push(`Requirement ${change.entityId} not found in base`)
+        continue
+      }
+      // If oldValue is specified, it must match the current base value
+      if (change.oldValue !== undefined && change.field) {
+        const currentValue = (req.params as any)[change.field] ?? (req as any)[change.field]
+        if (JSON.stringify(currentValue) !== JSON.stringify(change.oldValue)) {
+          errors.push(`Requirement ${change.entityId} field "${change.field}": oldValue ${JSON.stringify(change.oldValue)} does not match current value ${JSON.stringify(currentValue)}`)
+        }
+      }
+    } else if (change.entityType === 'program') {
+      const prog = basePrograms.find((p) => p.id === change.entityId)
+      if (!prog) {
+        errors.push(`Program ${change.entityId} not found in base`)
+        continue
+      }
+      if (change.oldValue !== undefined && change.field) {
+        const currentValue = (prog as any)[change.field]
+        if (JSON.stringify(currentValue) !== JSON.stringify(change.oldValue)) {
+          errors.push(`Program ${change.entityId} field "${change.field}": oldValue mismatch`)
+        }
+      }
+    } else if (change.entityType === 'transition') {
+      const tr = baseTransitions.find((t) => t.id === change.entityId)
+      if (!tr) {
+        errors.push(`Transition ${change.entityId} not found in base`)
+      }
+    }
+  }
+
+  // Provenance check: only AUTHORITATIVE/DERIVED overlays may be applied
+  // (unless simulation mode — handled by the caller)
+  if (overlay.provenance !== 'AUTHORITATIVE' && overlay.provenance !== 'DERIVED' && overlay.provenance !== 'SIMULATED' && overlay.provenance !== 'TEST_FIXTURE') {
+    errors.push(`Unknown provenance: ${overlay.provenance}`)
+  }
+
+  return { valid: errors.length === 0, errors }
 }
 
 // ---------------------------------------------------------------------------
@@ -222,15 +281,42 @@ export function applyOverlays(
 // Hashing
 // ---------------------------------------------------------------------------
 
-/** Deterministic hash of the resolved runtime policy. Same inputs → same hash. */
+/** Deterministic hash of the RESOLVED runtime policy (not just ids — the
+ *  actual resolved entity state). If the resolved policy differs, the hash
+ *  differs. If identical, the hash is identical. */
 export function runtimePolicyHash(
   baseSnapshotId: string,
   overlayIds: string[],
   asOf: string,
+  resolvedRequirements?: NormalizedRequirement[],
+  resolvedPrograms?: ImmigrationProgram[],
+  resolvedTransitions?: NormalizedTransition[],
 ): string {
+  // If resolved entities are provided, hash the full resolved state.
+  // Otherwise (legacy callers), hash just the ids.
+  if (resolvedRequirements && resolvedPrograms && resolvedTransitions) {
+    const payload = JSON.stringify({
+      base: baseSnapshotId,
+      overlays: overlayIds.sort(),
+      asOf,
+      // Canonicalize the resolved entities: sort by id, include only fields
+      // that affect policy evaluation.
+      requirements: resolvedRequirements
+        .map((r) => ({ id: r.id, kind: r.kind, params: r.params, verification: r.verification, effectiveFrom: r.effectiveFrom }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+      programs: resolvedPrograms
+        .map((p) => ({ id: p.id, status: p.status, estimatedCostUSD: p.estimatedCostUSD, processingTimeMonths: p.processingTimeMonths }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+      transitions: resolvedTransitions
+        .map((t) => ({ id: t.id, durationMonths: t.durationMonths, reversible: t.reversible }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+    })
+    return createHash('sha256').update(payload).digest('hex').slice(0, 16)
+  }
+  // Legacy path: hash ids only
   const payload = JSON.stringify({
     base: baseSnapshotId,
-    overlays: overlayIds.sort(), // order-independent
+    overlays: overlayIds.sort(),
     asOf,
   })
   return createHash('sha256').update(payload).digest('hex').slice(0, 16)
@@ -276,31 +362,61 @@ export async function resolveRuntimePolicy(opts: {
   // 1. Select the base snapshot (code knowledge)
   const baseSnapshot = getPolicySnapshot(jurisdiction, asOf, simulationMode)
 
-  // 2. Validate each overlay (skip malformed ones — never fail open)
-  const validOverlays = overlays.filter((o) => {
-    try {
-      return o && o.changes && o.contentHash && o.publicationId
-    } catch {
-      return false
+  // 2. Load the BASE SNAPSHOT's entities (not the global arrays).
+  //    This ensures a 2024 base + overlay produces a coherent 2024 policy,
+  //    not a mix of 2024 base + 2026 global arrays + overlay.
+  const baseRequirements = getRequirementsInSnapshot(baseSnapshot.id)
+  const basePrograms = getProgramsInSnapshot(baseSnapshot.id)
+  const baseTransitions = getTransitionsInSnapshot(baseSnapshot.id)
+
+  // If the base snapshot has no entities (shouldn't happen), fall back to global
+  const effectiveBaseReqs = baseRequirements.length > 0 ? baseRequirements : REQUIREMENTS
+  const effectiveBasePrograms = basePrograms.length > 0 ? basePrograms : PROGRAMS
+  const effectiveBaseTransitions = baseTransitions.length > 0 ? baseTransitions : TRANSITIONS
+
+  // 3. Validate each overlay against the base (fail closed: skip invalid)
+  const validOverlays: PolicyOverlay[] = []
+  for (const overlay of overlays) {
+    if (!overlay || !overlay.changes || !overlay.contentHash || !overlay.publicationId) {
+      console.warn('[runtime-policy] malformed overlay skipped:', overlay?.publicationId)
+      continue
     }
+    const validation = validateOverlayAgainstBase(overlay, effectiveBaseReqs, effectiveBasePrograms, effectiveBaseTransitions)
+    if (!validation.valid) {
+      console.warn('[runtime-policy] overlay failed validation, skipping:', overlay.publicationId, validation.errors)
+      continue
+    }
+    validOverlays.push(overlay)
+  }
+
+  // 4. Sort overlays deterministically: effectiveFrom, then publicationId
+  validOverlays.sort((a, b) => {
+    const fromCmp = new Date(a.effectiveFrom).getTime() - new Date(b.effectiveFrom).getTime()
+    if (fromCmp !== 0) return fromCmp
+    return a.publicationId.localeCompare(b.publicationId)
   })
 
-  // 4. Apply overlays in version/order sequence
+  // 5. Apply overlays to the BASE SNAPSHOT's entities (not global arrays)
   const { requirements, programs, transitions } = applyOverlays(
     validOverlays,
-    REQUIREMENTS,
-    PROGRAMS,
-    TRANSITIONS,
+    effectiveBaseReqs,
+    effectiveBasePrograms,
+    effectiveBaseTransitions,
   )
 
-  // 5. Construct the runtime version id + hash
+  // 6. Construct the runtime version id + hash (hash covers resolved state)
   const activeOverlayIds = validOverlays.map((o) => o.publicationId)
   const runtimeVersionId = activeOverlayIds.length > 0
     ? `${baseSnapshot.id}+${activeOverlayIds.length}`
     : baseSnapshot.id
-  const runtimeHash = runtimePolicyHash(baseSnapshot.id, activeOverlayIds, asOf)
+  const runtimeHash = runtimePolicyHash(baseSnapshot.id, activeOverlayIds, asOf, requirements, programs, transitions)
 
-  // 6. Build the immutable resolved snapshot
+  // 7. Determine provenance (AUTHORITATIVE unless any overlay is SIMULATED)
+  const provenance: PolicyProvenance = validOverlays.some((o) => o.provenance === 'SIMULATED' || o.provenance === 'TEST_FIXTURE')
+    ? baseSnapshot.provenance
+    : baseSnapshot.provenance
+
+  // 8. Build the immutable resolved snapshot
   const snapshot: RuntimePolicySnapshot = {
     baseSnapshotId: baseSnapshot.id,
     activeOverlayIds,
@@ -311,6 +427,7 @@ export async function resolveRuntimePolicy(opts: {
     requirements,
     programs,
     transitions,
+    provenance,
   }
 
   // Cache it
@@ -365,5 +482,6 @@ export function resolveRuntimePolicySync(opts: {
     requirements: REQUIREMENTS,
     programs: PROGRAMS,
     transitions: TRANSITIONS,
+    provenance: baseSnapshot.provenance,
   }
 }

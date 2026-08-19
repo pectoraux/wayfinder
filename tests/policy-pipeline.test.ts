@@ -399,14 +399,16 @@ describe('Plan impact analysis', () => {
     expect(isMaterialImpact('NEW_BETTER_ROUTE')).toBe(true)
   })
 
-  it('recomputePlanImpact classifies the impact level', () => {
+  it('recomputePlanImpact classifies the impact level', async () => {
     const state = exampleState()
     const intent = parseIntentDeterministic('I want to move abroad.')
     const oldPlan = buildPlan(state, intent, [], '2025-06-01')
-    const impact = recomputePlanImpact(oldPlan, state, intent, 'snap-2026-01')
+    // recomputePlanImpact is now async and uses the runtime resolver (no hardcoded snapshot)
+    const { newPlan, impact } = await recomputePlanImpact(oldPlan, state, intent)
     expect(impact.level).toMatch(/NO_MATERIAL_CHANGE|MINOR_CHANGE|ROUTE_DEGRADED|ROUTE_INVALIDATED|NEW_BETTER_ROUTE/)
     expect(impact.whatChanged).toBeTruthy()
     expect(impact.recommendedAction).toBeTruthy()
+    expect(newPlan).toBeDefined()
   })
 
   it('getAffectedDecisionRecordIds returns records computed before the change effective date', () => {

@@ -1,19 +1,27 @@
 // Wayfinder — Alert Generation Pipeline
 //
 // When a policy is published:
-//   PolicyPublication → affected routes → affected active plans → impact
-//   classification → alert candidates → materiality threshold → PolicyAlert
+//   PolicyPublication → affected plans → recompute under NEW runtime policy
+//   → impact classification (from deterministic plan diff) → alert candidates
+//   → materiality threshold → PolicyAlert
 //
-// Only MATERIAL impacts (ROUTE_DEGRADED, ROUTE_INVALIDATED, NEW_BETTER_ROUTE)
-// produce user-facing alerts. NO_MATERIAL_CHANGE and MINOR_CHANGE do not.
-//
-// Deduplication: an idempotency key (userId + publicationId + planId +
-// impactType) prevents duplicate alerts if the job runs twice.
+// CRITICAL: this uses resolveRuntimePolicy() — the single source of runtime
+// policy truth. NO hardcoded snapshot IDs. NO simulationMode=true in production.
+// The old plan is evaluated under the old policy context; the new plan is
+// evaluated under the new (post-publication) runtime policy.
 
-import type { CandidateFact, PlanImpact, PlanImpactLevel, AlertSeverity } from './types'
+import type {
+  CandidateFact,
+  PlanImpact,
+  PlanImpactLevel,
+  AlertSeverity,
+  PlanDiff,
+  PolicyContext,
+} from './types'
 import type { MobilityPlan, MobilityState, Intent } from '@/lib/domain/types'
 import { buildPlan } from '@/lib/engine/optimize'
-import { isRouteStillValid } from '@/lib/graph/mobility-graph'
+import { buildPlanWithRuntimePolicy } from '@/lib/engine/optimize'
+import { diffPlans } from './plan-diff'
 
 // ---------------------------------------------------------------------------
 // Severity mapping
@@ -40,6 +48,7 @@ export interface AlertCandidate {
   policyPublicationId: string
   policyChangeId: string
   impact: PlanImpact
+  planDiff: PlanDiff
   idempotencyKey: string
   title: string
   whatChanged: string
@@ -47,18 +56,27 @@ export interface AlertCandidate {
   recommendedAction: string
   alternativeRoutes: string[]
   severity: AlertSeverity
+  previousPolicyContext?: PolicyContext
+  newPolicyContext?: PolicyContext
+  previousBestRoute?: string
+  newBestRoute?: string
 }
 
 /**
  * Generate alert candidates for a published policy change.
  *
- * @param publication   the published PolicyPublication
- * @param candidate     the CandidateFact that was approved
- * @param affectedPlans the user plans affected by this publication
- *                      (each with the user's state + intent + decisionRecordId + userId)
- * @returns             alert candidates (only MATERIAL impacts)
+ * The old plan is the user's saved plan (computed under the old runtime policy).
+ * The new plan is recomputed under the CURRENT runtime policy (which now
+ * includes the just-published overlay, because the cache was invalidated).
+ *
+ * The impact is derived from a deterministic plan diff — NOT from assumptions.
+ *
+ * @param publication     the published PolicyPublication
+ * @param candidate       the CandidateFact that was approved
+ * @param affectedPlans   the user plans affected (each with state + intent + decisionRecordId + userId)
+ * @returns               alert candidates (only MATERIAL impacts)
  */
-export function generateAlertCandidates(
+export async function generateAlertCandidates(
   publication: { id: string; contentHash: string },
   candidate: CandidateFact,
   affectedPlans: {
@@ -68,12 +86,22 @@ export function generateAlertCandidates(
     state: MobilityState
     intent: Intent
   }[],
-): AlertCandidate[] {
+): Promise<AlertCandidate[]> {
   const alerts: AlertCandidate[] = []
 
   for (const ap of affectedPlans) {
-    // Recompute the plan under the new policy
-    const impact = recomputeImpact(ap.plan, ap.state, ap.intent, publication.id)
+    // Recompute the plan under the CURRENT runtime policy (post-publication).
+    // NO simulationMode — this is production impact analysis.
+    const newPlan = await buildPlanWithRuntimePolicy(ap.state, ap.intent, [], {
+      asOfDate: ap.plan.asOfDate,
+      simulationMode: false,
+    })
+
+    // Compute the deterministic diff between old and new plans
+    const planDiff = diffPlans(ap.plan, newPlan)
+
+    // Classify the impact from the diff
+    const impact = classifyImpactFromDiff(ap.plan, newPlan, planDiff)
 
     // Only generate alerts for MATERIAL impacts
     if (impact.level === 'NO_MATERIAL_CHANGE' || impact.level === 'MINOR_CHANGE') {
@@ -83,12 +111,16 @@ export function generateAlertCandidates(
     const severity = severityForImpact(impact.level)
     const idempotencyKey = `${ap.userId}|${publication.id}|${ap.decisionRecordId}|${impact.level}`
 
+    const oldBest = ap.plan.routes.find((r) => r.id === ap.plan.recommendation.bestRouteId)
+    const newBest = newPlan.routes[0]
+
     alerts.push({
       userId: ap.userId,
       decisionRecordId: ap.decisionRecordId,
       policyPublicationId: publication.id,
       policyChangeId: candidate.id,
       impact,
+      planDiff,
       idempotencyKey,
       title: buildAlertTitle(impact, candidate),
       whatChanged: impact.whatChanged,
@@ -96,97 +128,112 @@ export function generateAlertCandidates(
       recommendedAction: impact.recommendedAction,
       alternativeRoutes: impact.alternativesOpened,
       severity,
+      previousPolicyContext: ap.plan.runtimePolicyVersion ? {
+        jurisdiction: 'global',
+        asOf: ap.plan.asOfDate,
+        baseSnapshotId: ap.plan.policySnapshotId ?? 'snap-2024-11',
+        activeOverlayIds: ap.plan.activeOverlayIds ?? [],
+        runtimeVersionId: ap.plan.runtimePolicyVersion,
+        runtimeHash: ap.plan.runtimePolicyHash ?? ap.plan.policyHash,
+        provenance: 'AUTHORITATIVE',
+        simulationMode: false,
+      } : undefined,
+      newPolicyContext: newPlan.runtimePolicyVersion ? {
+        jurisdiction: 'global',
+        asOf: newPlan.asOfDate,
+        baseSnapshotId: newPlan.policySnapshotId ?? 'snap-2024-11',
+        activeOverlayIds: newPlan.activeOverlayIds ?? [],
+        runtimeVersionId: newPlan.runtimePolicyVersion,
+        runtimeHash: newPlan.runtimePolicyHash ?? newPlan.policyHash,
+        provenance: 'AUTHORITATIVE',
+        simulationMode: false,
+      } : undefined,
+      previousBestRoute: oldBest?.label,
+      newBestRoute: newBest?.label,
     })
   }
 
   return alerts
 }
 
-/** Recompute the impact of a policy change on a plan. */
-function recomputeImpact(
+/** Classify the impact level from a deterministic plan diff. */
+function classifyImpactFromDiff(
   oldPlan: MobilityPlan,
-  state: MobilityState,
-  intent: Intent,
-  _newPublicationId: string,
+  newPlan: MobilityPlan,
+  diff: PlanDiff,
 ): PlanImpact {
   const oldBest = oldPlan.routes.find((r) => r.id === oldPlan.recommendation.bestRouteId)
-  const oldSnapshotId = oldPlan.policySnapshotId ?? 'snap-2024-11'
-
-  // Check if the old best route is still valid under the new snapshot
-  // (using the code knowledge base; the DB overlay is applied at runtime)
-  const invalidation = oldBest
-    ? isRouteStillValid(
-        { entryPathwayId: oldBest.entryPathwayId, eligibility: { evidenceIds: oldBest.evidenceIds } },
-        oldSnapshotId,
-        'snap-2026-01', // the latest snapshot (simplified — would use the new publication's version)
-      )
-    : null
-
-  // Recompute the plan
-  const newPlan = buildPlan(state, intent, [], oldPlan.asOfDate, true)
   const newBest = newPlan.routes[0]
 
-  let level: PlanImpactLevel
-  let whatChanged: string
-  let whyItMatters: string
-  let whatHappensToPlan: string
-  const alternativesOpened: string[] = []
-  const alternativesClosed: string[] = []
-  let recommendedAction: string
-
-  if (!invalidation || invalidation.valid) {
-    if (newBest && oldBest && newBest.id !== oldBest.id) {
-      level = 'NEW_BETTER_ROUTE'
-      whatChanged = `Policy update changed the ranking. ${newBest.label} now ranks first.`
-      whyItMatters = 'Your previous best route is still valid, but a better option emerged.'
-      whatHappensToPlan = `Your plan shifts from ${oldBest.label} to ${newBest.label}.`
-      alternativesOpened.push(newBest.label)
-      recommendedAction = `Review the new best route: ${newBest.label}.`
-    } else {
-      const oldScore = oldBest?.scores.riskAdjusted ?? 0
-      const newScore = newBest?.scores.riskAdjusted ?? 0
-      const delta = newScore - oldScore
-      if (Math.abs(delta) < 3) {
-        level = 'NO_MATERIAL_CHANGE'
-        whatChanged = 'Policy changed but your plan is materially unaffected.'
-        whyItMatters = 'The changes did not cross any threshold that affects your routes.'
-        whatHappensToPlan = 'Your current plan remains the best option.'
-        recommendedAction = 'No action needed.'
-      } else {
-        level = 'MINOR_CHANGE'
-        whatChanged = `Your best route's risk-adjusted score changed by ${delta > 0 ? '+' : ''}${delta.toFixed(0)} points.`
-        whyItMatters = 'This is a minor shift that does not change your recommended route.'
-        whatHappensToPlan = 'Your current plan remains the best option, with a slightly adjusted outlook.'
-        recommendedAction = 'No action needed — the change is minor.'
+  // If the best route changed
+  if (diff.bestRouteChanged) {
+    // Did the old best become ineligible?
+    const oldBestClosed = diff.routesClosed.includes(oldBest?.id ?? '')
+    if (oldBestClosed) {
+      return {
+        level: 'ROUTE_INVALIDATED',
+        whatChanged: `Your best route (${oldBest?.label}) was invalidated by the policy change.`,
+        whyItMatters: 'The policy change made your planned route no longer viable under current rules.',
+        whatHappensToPlan: `Your plan shifts from ${oldBest?.label} to ${newBest?.label}.`,
+        alternativesOpened: newBest ? [newBest.label] : [],
+        alternativesClosed: oldBest ? [oldBest.label] : [],
+        recommendedAction: `Review the new recommended route: ${newBest?.label}.`,
+        severity: 'CRITICAL',
       }
     }
-  } else {
-    if (newBest && newBest.id !== oldBest?.id) {
-      level = 'ROUTE_INVALIDATED'
-      whatChanged = `Your best route (${oldBest?.label}) was invalidated: ${invalidation.reasons.join(', ')}.`
-      whyItMatters = 'The policy change made your planned route no longer viable under current rules.'
-      whatHappensToPlan = `Your plan shifts from ${oldBest?.label} to ${newBest.label}.`
-      alternativesOpened.push(newBest.label)
-      recommendedAction = `Review the new recommended route: ${newBest.label}.`
-      if (oldBest) alternativesClosed.push(oldBest.label)
-    } else {
-      level = 'ROUTE_DEGRADED'
-      whatChanged = `Your best route (${oldBest?.label}) was affected: ${invalidation.reasons.join(', ')}.`
-      whyItMatters = 'The route is not fully invalidated but requirements have tightened.'
-      whatHappensToPlan = 'Your route remains the best option but requires meeting a higher bar.'
-      recommendedAction = 'Review the updated requirements for your route.'
+    // A new better route emerged
+    return {
+      level: 'NEW_BETTER_ROUTE',
+      whatChanged: `Policy update changed the ranking. ${newBest?.label} now ranks first.`,
+      whyItMatters: 'Your previous best route is still valid, but a better option emerged under the new rules.',
+      whatHappensToPlan: `Your plan shifts from ${oldBest?.label} to ${newBest?.label}.`,
+      alternativesOpened: newBest ? [newBest.label] : [],
+      alternativesClosed: [],
+      recommendedAction: `Review the new best route: ${newBest?.label}.`,
+      severity: 'NOTICE',
     }
   }
 
+  // Same best route — check for new blockers or score degradation
+  const newBlockersForBest = diff.newBlockers.filter((b) => b.routeId === oldBest?.id)
+  if (newBlockersForBest.length > 0) {
+    return {
+      level: 'ROUTE_DEGRADED',
+      whatChanged: `Your best route (${oldBest?.label}) was affected: ${newBlockersForBest.map((b) => b.blocker).join(', ')}.`,
+      whyItMatters: 'The route is not fully invalidated but requirements have tightened.',
+      whatHappensToPlan: 'Your route remains the best option but requires meeting a higher bar.',
+      alternativesOpened: [],
+      alternativesClosed: [],
+      recommendedAction: 'Review the updated requirements for your route.',
+      severity: 'IMPORTANT',
+    }
+  }
+
+  // Check score changes
+  const bestScoreChange = diff.scoreChanges.find((s) => s.routeId === oldBest?.id)
+  if (bestScoreChange && Math.abs(bestScoreChange.delta) >= 3) {
+    return {
+      level: 'MINOR_CHANGE',
+      whatChanged: `Your best route's score changed by ${bestScoreChange.delta > 0 ? '+' : ''}${bestScoreChange.delta.toFixed(0)} points.`,
+      whyItMatters: 'This is a minor shift that does not change your recommended route.',
+      whatHappensToPlan: 'Your current plan remains the best option, with a slightly adjusted outlook.',
+      alternativesOpened: [],
+      alternativesClosed: [],
+      recommendedAction: 'No action needed — the change is minor.',
+      severity: 'INFO',
+    }
+  }
+
+  // No material change
   return {
-    level,
-    whatChanged,
-    whyItMatters,
-    whatHappensToPlan,
-    alternativesOpened,
-    alternativesClosed,
-    recommendedAction,
-    severity: severityForImpact(level),
+    level: 'NO_MATERIAL_CHANGE',
+    whatChanged: 'Policy changed but your plan is materially unaffected.',
+    whyItMatters: 'The changes did not cross any threshold that affects your routes.',
+    whatHappensToPlan: 'Your current plan remains the best option.',
+    alternativesOpened: [],
+    alternativesClosed: [],
+    recommendedAction: 'No action needed.',
+    severity: 'INFO',
   }
 }
 

@@ -651,7 +651,7 @@ export interface RuntimePolicySnapshot {
   activeOverlayIds: string[]
   /** A composite version id: base + overlay count. */
   runtimeVersionId: string
-  /** Deterministic hash of base + overlays + asOf. */
+  /** Deterministic hash of base + overlays + asOf + resolved entities. */
   runtimeHash: string
   /** The as-of date this snapshot was resolved for. */
   asOf: string
@@ -663,6 +663,38 @@ export interface RuntimePolicySnapshot {
   programs: ImmigrationProgram[]
   /** The resolved transitions. */
   transitions: NormalizedTransition[]
+  /** The provenance of this runtime snapshot (inherited from base + overlays). */
+  provenance: PolicyProvenance
+}
+
+/** A canonical policy context object representing the exact policy world
+ *  against which a plan is being evaluated. Every major planning operation
+ *  (eligibility, route generation, optimization, impact analysis, decision
+ *  records, plan versions, alerts, historical comparison) must carry this
+ *  context so they all use the same policy state. */
+export interface PolicyContext {
+  jurisdiction: string
+  asOf: string
+  baseSnapshotId: string
+  activeOverlayIds: string[]
+  runtimeVersionId: string
+  runtimeHash: string
+  provenance: PolicyProvenance
+  simulationMode: boolean
+}
+
+/** Convert a RuntimePolicySnapshot to a lightweight PolicyContext. */
+export function toPolicyContext(snap: RuntimePolicySnapshot): PolicyContext {
+  return {
+    jurisdiction: 'global',
+    asOf: snap.asOf,
+    baseSnapshotId: snap.baseSnapshotId,
+    activeOverlayIds: snap.activeOverlayIds,
+    runtimeVersionId: snap.runtimeVersionId,
+    runtimeHash: snap.runtimeHash,
+    provenance: snap.provenance,
+    simulationMode: snap.simulationMode,
+  }
 }
 
 export interface ConsistencyCheckResult {
@@ -746,4 +778,63 @@ export interface PolicyWatchlistEntry {
   watchId: string
   watchLabel: string
   createdAt: string
+}
+
+// ===========================================================================
+// 16. PLAN DIFF (deterministic old-plan vs new-plan comparison)
+// ===========================================================================
+
+/** A deterministic diff between two plan versions. Computed by code, not LLM. */
+export interface PlanDiff {
+  bestRouteChanged: boolean
+  previousBestRoute?: string
+  newBestRoute?: string
+  /** Route ids that became newly eligible. */
+  routesOpened: string[]
+  /** Route ids that became ineligible. */
+  routesClosed: string[]
+  /** Eligibility status changes per route. */
+  eligibilityChanges: { routeId: string; label: string; oldStatus: string; newStatus: string }[]
+  /** Score changes per route. */
+  scoreChanges: { routeId: string; label: string; field: string; oldValue: number; newValue: number; delta: number }[]
+  /** Cost changes. */
+  costChanges: { routeId: string; label: string; oldValue: number; newValue: number; delta: number }[]
+  /** Timeline changes. */
+  timelineChanges: { routeId: string; label: string; oldMonths: number; newMonths: number; delta: number }[]
+  /** New blockers that appeared. */
+  newBlockers: { routeId: string; label: string; blocker: string }[]
+  /** Blockers that were resolved. */
+  resolvedBlockers: { routeId: string; label: string; blocker: string }[]
+}
+
+// ===========================================================================
+// 17. POLICY PROPAGATION (tracks the publication → alert pipeline)
+// ===========================================================================
+
+export type PropagationStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETE' | 'FAILED'
+
+export interface PolicyPropagation {
+  id: string
+  publicationId: string
+  status: PropagationStatus
+  startedAt: string
+  completedAt?: string
+  affectedPlans: number
+  recomputedPlans: number
+  alertsCreated: number
+  failures: number
+  errorSummary?: string
+}
+
+/** Result of the idempotent processPolicyPublication job. */
+export interface PropagationResult {
+  publicationId: string
+  status: PropagationStatus
+  affectedPlans: number
+  recomputedPlans: number
+  alertsCreated: number
+  failures: number
+  errorSummary?: string
+  /** Whether this run actually did work or was a no-op (idempotent skip). */
+  wasNoOp: boolean
 }
