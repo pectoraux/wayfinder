@@ -140,8 +140,12 @@ model DecisionRecord {
   previousRecordId String?
   /// What triggered this plan version: "intake" | "edit" | "POLICY_CHANGE" | "counterfactual" | "OBJECTIVE_ADOPT"
   trigger         String   @default("intake")
+  /// The deterministic cause of this strategy change (N0.2 Strategy Memory).
+  changeReason    String?
   /// The policy publication that triggered this recomputation, if any.
   policyPublicationId String?
+  /// The PolicyEvent that triggered this recomputation, if policy-driven.
+  policyEventId   String?
   /// The user who owns this plan (for alert generation).
   userId          String?
   /// Plan lifecycle status: ACTIVE (current), SUPERSEDED (replaced by a newer version), ARCHIVED (user dismissed)
@@ -169,6 +173,7 @@ model DecisionRecord {
 
   @@index([personId])
   @@index([policyPublicationId])
+  @@index([policyEventId])
   @@index([userId])
   @@index([planStatus])
   @@index([userId, planStatus])

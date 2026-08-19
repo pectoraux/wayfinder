@@ -10,6 +10,7 @@ import { EnablerList } from '@/components/wayfinder/enabler-list'
 import { ChangeSignal } from '@/components/wayfinder/policy/change-signal'
 import { HistoricalModePicker } from '@/components/wayfinder/policy/historical-mode-picker'
 import { PlanHistory } from '@/components/wayfinder/plan-history'
+import { StrategyHistory } from '@/components/wayfinder/strategy/strategy-history'
 import { StrategyHero } from '@/components/wayfinder/strategy/strategy-hero'
 import { TrajectoryMap } from '@/components/wayfinder/strategy/trajectory-map'
 import { BlockerSection } from '@/components/wayfinder/strategy/blocker-section'
@@ -47,6 +48,7 @@ export function ResultsDashboard() {
   const strategyStaleness = useWayfinder((s) => s.strategyStaleness)
   const strategyProvenance = useWayfinder((s) => s.strategyProvenance)
   const recomputeStrategy = useWayfinder((s) => s.recomputeStrategy)
+  const activeObjective = useWayfinder((s) => s.activeObjective)
 
   const [savedId, setSavedId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -449,7 +451,12 @@ export function ResultsDashboard() {
         </Card>
       </section>
 
-      {/* ===== PLAN HISTORY ===== */}
+      {/* ===== STRATEGY HISTORY (N0.2 Strategy Memory) ===== */}
+      <section className="mb-6">
+        <StrategyHistory objectiveId={activeObjective} />
+      </section>
+
+      {/* ===== PLAN HISTORY (existing, retained) ===== */}
       <section className="mb-6">
         <PlanHistory />
       </section>

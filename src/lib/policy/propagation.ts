@@ -240,6 +240,11 @@ export async function processPolicyPublication(
             policyPublicationId: publicationId,
             previousRecordId: record.id,
             planStatus: 'ACTIVE',
+            // N0.2 Strategy Memory: persist the deterministic change cause +
+            // link to the canonical PolicyEvent so the history timeline can
+            // explain WHY this strategy was recomputed.
+            changeReason: 'POLICY_CHANGED',
+            policyEventId: policyEvent?.id ?? null,
           },
         })
 

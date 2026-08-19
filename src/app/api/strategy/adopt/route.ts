@@ -234,9 +234,37 @@ export async function POST(req: Request) {
       const intentVersion = intentRecord.version
       const intentRecordId = intentRecord.id
 
-      // 4. Mark previous ACTIVE plans for this user + objective as SUPERSEDED.
-      //    This clears their uniqueActiveObjectiveKey sentinel so the new
-      //    record can claim it via the unique constraint.
+      // 4. Find the PREVIOUS ACTIVE record for this user + objective BEFORE
+      //    superseding it, so we can link previousRecordId + classify the
+      //    change cause deterministically (N0.2 Strategy Memory).
+      const previousActive = await tx.decisionRecord.findFirst({
+        where: { userId, planStatus: 'ACTIVE', objectiveId: body.objectiveId },
+        orderBy: { createdAt: 'desc' },
+      })
+
+      // Determine the deterministic change cause by comparing provenance.
+      // This is the SAME logic as classifyStrategyChangeCause, inlined here
+      // so we can persist the cause at write time.
+      let changeReason: string
+      if (!previousActive) {
+        changeReason = 'MANUAL_ADOPTION'
+      } else if (previousActive.stateVersion !== mobilityStateVersion) {
+        changeReason = 'USER_PROFILE_CHANGED'
+      } else if (previousActive.intentVersion !== intentVersion) {
+        changeReason = 'USER_INTENT_CHANGED'
+      } else if (previousActive.objectiveId !== body.objectiveId) {
+        changeReason = 'OBJECTIVE_CHANGED'
+      } else if (previousActive.runtimePolicyHash !== (policyContext?.runtimeHash ?? null)) {
+        changeReason = 'POLICY_CHANGED'
+      } else if (previousActive.strategyEngineVersion !== strategyEngineVersion) {
+        changeReason = 'ENGINE_CHANGED'
+      } else {
+        changeReason = 'MANUAL_ADOPTION'
+      }
+
+      // Mark previous ACTIVE plans for this user + objective as SUPERSEDED.
+      // This clears their uniqueActiveObjectiveKey sentinel so the new
+      // record can claim it via the unique constraint.
       await tx.decisionRecord.updateMany({
         where: { userId, planStatus: 'ACTIVE', objectiveId: body.objectiveId },
         data: {
@@ -251,7 +279,8 @@ export async function POST(req: Request) {
       //    definition changes.
       const objectiveVersion = 1
 
-      // 6. Create the new ACTIVE record with the FULL canonical provenance.
+      // 6. Create the new ACTIVE record with the FULL canonical provenance +
+      //    the change memory (previousRecordId + changeReason).
       //    The uniqueActiveObjectiveKey sentinel enforces "at most one ACTIVE
       //    per user + objective" at the DB level. A concurrent adoption would
       //    fail here with a unique constraint violation, which we surface as
@@ -293,6 +322,11 @@ export async function POST(req: Request) {
           } as any,
           // DB-level uniqueness sentinel
           uniqueActiveObjectiveKey: `${userId}:${body.objectiveId}`,
+          // N0.2 Strategy Memory: link to the previous record + persist the
+          // deterministic change cause so the history timeline can explain
+          // WHY this strategy changed.
+          previousRecordId: previousActive?.id ?? null,
+          changeReason,
         },
       })
 

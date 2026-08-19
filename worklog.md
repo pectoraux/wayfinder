@@ -718,3 +718,80 @@ Stage Summary:
   ✅ Tests cover all failure modes (16 tests covering all 7 statuses + isolation + determinism + no-mutation)
   ✅ Full test suite remains green (324/324)
   ✅ lint clean, typecheck clean, build clean
+
+---
+Task ID: N0.2-audit
+Agent: main (lead architect)
+Task: Inspect actual repository + design N0.2 Strategy Memory.
+
+Work Log:
+- Reconciled: local HEAD = GitHub main = af6b8cc. Production /api/health = 08cfe34 (the pre-amend commit; code-identical — only worklog.md differs). The SHA mismatch is from the previous session's amend + force-push; production serves the exact N0.1b code.
+- Inspected actual source (not prior summaries):
+  - DecisionRecord schema: has previousRecordId, trigger, policyPublicationId, objectiveId, objectiveVersion, mobilityStateSnapshotId, intentRecordId, uniqueActiveObjectiveKey. MISSING: changeReason (deterministic cause), policyEventId.
+  - trigger values in use: 'intake', 'edit', 'POLICY_CHANGE', 'counterfactual', 'OBJECTIVE_ADOPT'.
+  - adopt route: sets trigger='OBJECTIVE_ADOPT', previousRecordId NOT set (the updateMany clears old ACTIVE but doesn't link).
+  - propagation: sets trigger='POLICY_CHANGE', previousRecordId=record.id, policyPublicationId. Does NOT set policyEventId.
+  - plans/history: returns records but no change reason or diff.
+  - compareStrategyReplay: exists, structured, reusable for diffs.
+  - No StrategyChange or StrategyDiff type exists yet.
+
+DESIGN DECISIONS (extend, don't duplicate):
+1. Extend DecisionRecord with: changeReason String? (deterministic cause: USER_PROFILE_CHANGED | USER_INTENT_CHANGED | OBJECTIVE_CHANGED | POLICY_CHANGED | ENGINE_CHANGED | MANUAL_ADOPTION | RECOMPUTATION | UNKNOWN), policyEventId String? (links to PolicyEvent for policy-driven changes).
+2. Reuse existing trigger field for backward compat; add changeReason as the richer classification.
+3. Build src/lib/strategy/change.ts: StrategyChangeCause enum, buildStrategyChange(prev, next) → StrategyChange, StrategyDiff (reuses compareStrategyReplay).
+4. Wire adopt route to set previousRecordId + changeReason on every adoption.
+5. Wire propagation to set changeReason='POLICY_CHANGED' + policyEventId.
+6. Build GET /api/strategy/history (objective-aware, user-scoped, with change reasons).
+7. Build GET /api/strategy/compare?recordId=... (structured diff vs current).
+8. Build StrategyHistory + StrategyCompareView UI components.
+9. Do NOT create StrategyHistoryRecord/StrategyVersionRecord/StrategyMemoryRecord — extend DecisionRecord.
+
+Stage Summary:
+- Audit complete. DecisionRecord is the canonical ledger; extend it with changeReason + policyEventId.
+- compareStrategyReplay is reusable for the diff layer.
+- The adopt route doesn't link previousRecordId — must fix.
+- Propagation links previousRecordId but doesn't set policyEventId or changeReason.
+- Implementation plan ready.
+
+---
+Task ID: N0.2-complete
+Agent: main (lead architect)
+Task: Build N0.2 Strategy Memory — change classification, deterministic diffs, history timeline.
+
+Work Log:
+- Reconciled: local HEAD = GitHub main = af6b8cc. Production = 08cfe34 (code-identical, only worklog differs from amend).
+- Audited actual source. Found: DecisionRecord had previousRecordId + trigger but NO changeReason + NO policyEventId. adopt route didn't link previousRecordId. Propagation didn't set policyEventId. No StrategyChange/StrategyDiff type existed.
+- EXTENDED DecisionRecord with changeReason + policyEventId + @@index([policyEventId]). Mirrored to schema.local.prisma. No new persistence system.
+- BUILT src/lib/strategy/change.ts:
+  - StrategyChangeCause enum (8 causes)
+  - classifyStrategyChangeCause (pure, deterministic)
+  - buildStrategyDiff (reuses compareStrategyReplay — ONE comparison code path)
+  - buildStrategyChange (complete transition description)
+  - explainStrategyChange (deterministic, no LLM)
+- WIRED adopt route: finds previous ACTIVE before superseding, classifies cause at write time, persists previousRecordId + changeReason.
+- WIRED propagation: sets changeReason='POLICY_CHANGED' + policyEventId.
+- BUILT GET /api/strategy/history (objective-aware, user-scoped, with causes + diffs).
+- BUILT GET /api/strategy/compare (structured diff vs current, user-scoped, read-only).
+- BUILT StrategyHistory UI component (timeline with cause badges, explanation, provenance, diff summary, Replay/Verify/Compare actions). Wired into ResultsDashboard.
+- WROTE 35 new tests (324 → 359): cause classification (9), diff construction (3), explanation (3), history immutability, linkage, all 6 cause types, objective isolation, no-exploration-pollution, replay/verify intact, deterministic diff, ephemeral exclusion, cross-user block, historical isolation (profile/intent/policy), replay on old records, provenance intact.
+- Ran lint (clean) + typecheck (clean) + build (clean) + tests (359/359).
+- Committed 8a9ba20 + pushed to GitHub. Verified GitHub main = 8a9ba20.
+- Re-audited published GitHub code: ALL acceptance criteria verified.
+- CI ran: lint ✅, tests ✅ (359/359), build ✅. Deploy step failed (Vercel rate limit — 100/day free-plan exhausted). Production still serves 08cfe34 (N0.1b); will update when rate limit resets.
+- Browser-verified locally at 390/768/1440px: Strategy History renders with timeline entries, cause badges, explanations, provenance. API returns 3 history entries with correct causes (USER_PROFILE_CHANGED, MANUAL_ADOPTION, MANUAL_ADOPTION) + previousRecordId linkage + explanations.
+
+Stage Summary:
+- N0.2 Strategy Memory is COMPLETE. All acceptance criteria met:
+  ✅ Every meaningful adopted strategy change is historically persisted
+  ✅ History is immutable (tested: byte-for-byte identical after replay/verify)
+  ✅ History is objective-aware (two ACTIVEs coexist for different objectives)
+  ✅ previousRecordId relationships are correct (tested)
+  ✅ Change causes are deterministic (8-cause enum, pure classifier)
+  ✅ Strategy diffs are deterministic (reuses compareStrategyReplay)
+  ✅ Policy/profile/intent/engine changes are distinguishable
+  ✅ Historical strategy replay works (tested)
+  ✅ Historical strategy verification works (tested)
+  ✅ Cross-user history access is blocked (tested: REPLAY_FAILED)
+  ✅ No historical record can be overwritten (tested)
+  ✅ Temporary exploration does not pollute history (tested)
+  ✅ Tests pass (359/359), lint clean, typecheck clean, build clean
