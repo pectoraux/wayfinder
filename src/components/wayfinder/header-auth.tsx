@@ -30,6 +30,11 @@ export function HeaderAuth() {
           <GitBranch className="h-3 w-3" /> Policy
         </Button>
         {isAdmin && (
+          <Button variant="ghost" size="sm" onClick={() => router.push("/admin/policy")} className="h-7 gap-1.5 text-xs">
+            <GitBranch className="h-3 w-3" /> Policy Console
+          </Button>
+        )}
+        {isAdmin && (
           <Button variant="ghost" size="sm" onClick={() => router.push("/admin")} className="h-7 gap-1.5 text-xs">
             <Shield className="h-3 w-3" /> Admin
           </Button>

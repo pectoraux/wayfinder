@@ -173,10 +173,14 @@ model PolicySource {
   jurisdictionId String
   sourceType    String   // GOVERNMENT_PAGE | LEGISLATION | REGULATION | ...
   authority     String
+  name          String   @default("Unnamed source")
   url           String   @unique
-  retrievalMethod String  @default("manual")
-  trustLevel    String   @default("official")
-  lastChecked   DateTime?
+  retrievalMethod String  @default("http_fetch")
+  trustLevel    String   @default("OFFICIAL_SECONDARY")
+  active        Boolean  @default(true)
+  monitoringFrequencyHours Int @default(168)
+  lastCheckedAt DateTime?
+  lastSuccessfulFetchAt DateTime?
   evidenceIds   String   @default("[]") // JSON array of evidence ids
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -184,6 +188,7 @@ model PolicySource {
   snapshots     SourceSnapshot[]
 
   @@index([jurisdictionId])
+  @@index([active])
 }
 
 /// A snapshot of a source's content at a point in time. Enables change
@@ -193,10 +198,116 @@ model SourceSnapshot {
   sourceId      String
   source        PolicySource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
   retrievedAt   DateTime @default(now())
-  contentHash   String   // SHA-256 of retrieved/normalized content
-  contentLocation String // object storage path or inline ref
-  changeType    String?  // TEXT_CHANGED | POSSIBLE_POLICY_CHANGE | VERIFIED_POLICY_CHANGE | UNCHANGED
+  contentHash   String
+  contentType   String   @default("")
+  contentLength Int      @default(0)
+  retrievalStatus String @default("OK")
+  statusCode    Int?
+  rawStorageLocation String @default("inline")
+  parserVersion String   @default("1.0")
+  changeType    String?  // UNCHANGED | TEXT_CHANGED | STRUCTURAL_CHANGED | POSSIBLE_POLICY_CHANGE | LIKELY_POLICY_CHANGE | VERIFIED_POLICY_CHANGE | FETCH_ERROR
   diffSummary   String?
+  content       String?
+
+  candidates    CandidateFact[]
 
   @@index([sourceId])
+  @@index([changeType])
+}
+
+/// An AI-extracted candidate policy change. Enters as AI_EXTRACTED and
+/// CANNOT become authoritative until a human approves it (status=APPROVED).
+model CandidateFact {
+  id            String   @id @default(cuid())
+  sourceSnapshotId String
+  sourceSnapshot SourceSnapshot @relation(fields: [sourceSnapshotId], references: [id], onDelete: Cascade)
+  jurisdictionId String
+  entityType    String   // requirement | program | transition | status
+  entityId      String?
+  entityLabel   String
+  changeKind    String   // threshold_changed | requirement_added | program_suspended | ...
+  field         String?
+  oldValue      String?  // JSON-serialized
+  newValue      String?  // JSON-serialized
+  effectiveFrom String?
+  effectiveTo   String?
+  evidence      String
+  sourceUrl     String
+  model         String   @default("z-ai-web-dev-sdk")
+  promptVersion String   @default("1.0")
+  confidence    Float    @default(0)
+  extractionStatus String @default("AI_EXTRACTED") // AI_EXTRACTED | PENDING_REVIEW | APPROVED | REJECTED | NEEDS_MORE_EVIDENCE | DUPLICATE | SUPERSEDED
+  aiInterpretation String?
+  createdAt     DateTime @default(now())
+  reviewedBy    String?
+  reviewedAt    DateTime?
+  reviewNote    String?
+
+  @@index([extractionStatus])
+  @@index([jurisdictionId])
+}
+
+/// A record of a policy version publication — the output of approving a
+/// candidate fact. Never mutates an existing published version.
+model PolicyPublication {
+  id            String   @id @default(cuid())
+  policyVersionId String
+  parentVersionId String
+  candidateFactIds String // JSON array
+  approvedBy    String
+  approvedAt    DateTime @default(now())
+  contentHash   String
+  provenance    String   @default("AUTHORITATIVE")
+  consistencyChecks String // JSON array of {name, passed, details}
+  notes         String
+
+  @@index([policyVersionId])
+}
+
+/// Audit log for every admin action in the policy console.
+model AdminAuditRecord {
+  id            String   @id @default(cuid())
+  adminId       String
+  adminEmail    String
+  action        String   // APPROVE_CANDIDATE | REJECT_CANDIDATE | PUBLISH_POLICY_VERSION | ...
+  entityId      String
+  entityType    String
+  before        String?  // JSON
+  after         String?  // JSON
+  timestamp     DateTime @default(now())
+  reason        String?
+
+  @@index([adminId])
+  @@index([action])
+}
+
+/// A user's policy watchlist — they follow a country/program/route and get
+/// notified when a verified change affects it.
+model PolicyWatchlist {
+  id            String   @id @default(cuid())
+  userId        String
+  watchType     String   // country | program | route
+  watchId       String
+  watchLabel    String
+  createdAt     DateTime @default(now())
+
+  @@unique([userId, watchType, watchId])
+  @@index([userId])
+}
+
+/// A user-facing policy alert, generated only when a VERIFIED policy change
+/// materially affects a user's saved plan or watchlist.
+model PolicyAlert {
+  id            String   @id @default(cuid())
+  userId        String
+  decisionRecordId String?
+  policyChangeId String   // references the CandidateFact that was approved
+  impactLevel   String   // NO_MATERIAL_CHANGE | MINOR_CHANGE | ROUTE_DEGRADED | ROUTE_INVALIDATED | NEW_BETTER_ROUTE
+  title         String
+  body          String
+  read          Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@index([userId])
+  @@index([read])
 }

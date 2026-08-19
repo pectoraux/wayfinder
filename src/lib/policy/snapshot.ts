@@ -34,47 +34,66 @@ import {
  * Returns the snapshot whose [effectiveFrom, effectiveTo) window contains asOf,
  * preferring the most recently published snapshot at or before asOf.
  *
- * If jurisdictionId is 'global' (default), returns the global snapshot.
- * If a jurisdiction is given, returns the global snapshot (jurisdictions are
- * currently bundled into global snapshots; per-jurisdiction snapshots are a
- * straightforward extension).
+ * CRITICAL SAFETY: by default, only AUTHORITATIVE snapshots are considered.
+ * SIMULATED / TEST_FIXTURE snapshots are excluded unless `allowSimulated` is
+ * explicitly true. This prevents synthetic data from ever being used for user
+ * recommendations, eligibility decisions, or current-policy displays by default.
  */
 export function getPolicySnapshot(
   jurisdictionId: string = 'global',
   asOf: string | Date = new Date(),
+  allowSimulated: boolean = false,
 ): PolicySnapshot {
   const asOfDate = typeof asOf === 'string' ? new Date(asOf) : asOf
   const asOfMs = asOfDate.getTime()
 
+  // Filter by provenance unless simulated is explicitly allowed
+  const provenanceFiltered = SNAPSHOTS.filter((s) =>
+    allowSimulated || s.provenance === 'AUTHORITATIVE' || s.provenance === 'DERIVED',
+  )
+
   // Candidates: snapshots effective on asOf
-  const candidates = SNAPSHOTS.filter((s) => {
+  const candidates = provenanceFiltered.filter((s) => {
     const from = new Date(s.effectiveFrom).getTime()
     const to = s.effectiveTo ? new Date(s.effectiveTo).getTime() : Infinity
     return asOfMs >= from && asOfMs < to
   })
 
   if (candidates.length > 0) {
-    // Most recently published
     return candidates.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())[0]
   }
 
   // No snapshot effective on asOf → return the latest published at or before asOf
-  const prior = SNAPSHOTS
+  const prior = provenanceFiltered
     .filter((s) => new Date(s.publishedAt).getTime() <= asOfMs)
     .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())
-  return prior[0] ?? SNAPSHOTS[0]
+  return prior[0] ?? provenanceFiltered[0] ?? SNAPSHOTS[0]
 }
 
-/** Returns the snapshot marked as 'current', or the latest published if none. */
+/** Returns the snapshot marked as 'current'. CRITICAL: only returns
+ *  AUTHORITATIVE snapshots — a SIMULATED snapshot can never be "current". */
 export function getCurrentPolicySnapshot(jurisdictionId: string = 'global'): PolicySnapshot {
-  const current = SNAPSHOTS.find((s) => s.status === 'current')
+  const current = SNAPSHOTS.find((s) => s.status === 'current' && s.provenance === 'AUTHORITATIVE')
   if (current) return current
-  return [...SNAPSHOTS].sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())[0]
+  // Fall back to the latest AUTHORITATIVE snapshot
+  const auth = SNAPSHOTS.filter((s) => s.provenance === 'AUTHORITATIVE')
+  return [...auth].sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())[0]
 }
 
-/** Returns all snapshots, newest first. */
+/** Returns all snapshots, newest first. Includes simulated ones (for the
+ *  policy explorer UI) but marks them clearly. */
 export function listSnapshots(): PolicySnapshot[] {
   return [...SNAPSHOTS].sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())
+}
+
+/** Returns only authoritative snapshots. */
+export function listAuthoritativeSnapshots(): PolicySnapshot[] {
+  return listSnapshots().filter((s) => s.provenance === 'AUTHORITATIVE')
+}
+
+/** Returns only simulated/test snapshots (for the explorer's simulation mode). */
+export function listSimulatedSnapshots(): PolicySnapshot[] {
+  return listSnapshots().filter((s) => s.provenance === 'SIMULATED' || s.provenance === 'TEST_FIXTURE')
 }
 
 // ---------------------------------------------------------------------------

@@ -86,6 +86,7 @@ export const SNAPSHOTS: PolicySnapshot[] = [
     version: '2024.11.1',
     hash: 'wf-kb-0011',
     status: 'current',
+    provenance: 'AUTHORITATIVE',
     notes:
       'Baseline normalized snapshot adapted from legacy PATHWAYS. Germany (Blue Card, Chancenkarte), Portugal (D7, D2/Startup), Canada (Express Entry, Start-Up Visa), Estonia (Startup Visa), UK (Global Talent), UAE (Virtual Work).',
     programIds: [],
@@ -101,8 +102,9 @@ export const SNAPSHOTS: PolicySnapshot[] = [
     version: '2026.01.1',
     hash: 'wf-kb-0012',
     status: 'draft',
+    provenance: 'SIMULATED',
     notes:
-      'HYPOTHETICAL future snapshot for demonstrating the temporal/diff/invalidation APIs. Changes: DE Blue Card salary threshold raised (projected annual indexation); CA Start-Up Visa capped (IRCC pause pattern, as occurred in 2024); PT D7 minimum income raised to track the 2025 Portuguese minimum wage. These are illustrative, NOT current law — verify against live sources.',
+      'SIMULATED — hypothetical future snapshot for demonstrating the temporal/diff/invalidation APIs. NOT current law. Changes: DE Blue Card salary threshold raised (projected); CA Start-Up Visa capped (IRCC pause pattern); PT D7 minimum income raised. Must NEVER be used by default for user recommendations or current-policy displays.',
     programIds: [],
     requirementIds: [],
     transitionIds: [],

@@ -49,10 +49,16 @@ describe('Temporal policy selection', () => {
     expect(snap.status).toBe('current')
   })
 
-  it('returns the 2026 snapshot for dates on/after 2026-01-01', () => {
-    const snap = getPolicySnapshot('global', '2026-06-15')
-    expect(snap.id).toBe('snap-2026-01')
-    expect(snap.version).toBe('2026.01.1')
+  it('returns the 2026 SIMULATED snapshot for dates on/after 2026-01-01 ONLY when simulation is allowed', () => {
+    // By default, simulated snapshots are excluded — the authoritative 2024 snapshot is returned
+    const snapDefault = getPolicySnapshot('global', '2026-06-15')
+    expect(snapDefault.id).toBe('snap-2024-11') // falls back to latest authoritative
+    expect(snapDefault.provenance).toBe('AUTHORITATIVE')
+
+    // Only when allowSimulated is true does the 2026 snapshot become accessible
+    const snapSim = getPolicySnapshot('global', '2026-06-15', true)
+    expect(snapSim.id).toBe('snap-2026-01')
+    expect(snapSim.provenance).toBe('SIMULATED')
   })
 
   it('returns the 2024 snapshot for dates between 2024-11-01 and 2026-01-01', () => {
@@ -128,8 +134,9 @@ describe('Eligibility across policy versions', () => {
     expect(salaryReq!.passed).toBe(true)
   })
 
-  it('under v2 (2026), the Blue Card salary requirement fails at $62k (general threshold raised to $64k)', () => {
-    const routes = generateRoutes(stateAt62kNonShortage, intent, '2026-06-01')
+  it('under v2 SIMULATED (2026), the Blue Card salary requirement fails at $62k (general threshold raised to $64k)', () => {
+    // simulationMode: true is required to access the SIMULATED 2026 snapshot
+    const routes = generateRoutes(stateAt62kNonShortage, intent, '2026-06-01', true)
     const blueCard = routes.find((r) => r.entryPathwayId === 'de-blue-card')!
     expect(blueCard).toBeDefined()
     // Under v2, $62k < $64k general threshold → NOT satisfied
@@ -137,9 +144,9 @@ describe('Eligibility across policy versions', () => {
     expect(satisfied).toBeUndefined()
   })
 
-  it('the same user faces a higher required threshold under v2 than v1', () => {
+  it('the same user faces a higher required threshold under v2 (SIMULATED) than v1', () => {
     const routesV1 = generateRoutes(stateAt62kNonShortage, intent, '2025-06-01')
-    const routesV2 = generateRoutes(stateAt62kNonShortage, intent, '2026-06-01')
+    const routesV2 = generateRoutes(stateAt62kNonShortage, intent, '2026-06-01', true)
     const bcV1 = routesV1.find((r) => r.entryPathwayId === 'de-blue-card')!
     const bcV2 = routesV2.find((r) => r.entryPathwayId === 'de-blue-card')!
     // Under v1, $62k ≥ $61k general threshold → salary SATISFIED.
@@ -252,13 +259,22 @@ describe('Historical decision reproducibility', () => {
     expect(plan.asOfDate).toBe('2025-06-01')
   })
 
-  it('a plan computed under v2 records the v2 snapshot id + hash', () => {
+  it('a plan computed under v2 (SIMULATED) records the v2 snapshot id + hash', () => {
     const state = exampleState()
     const intent = parseIntentDeterministic('I want to move abroad.')
-    const plan = buildPlan(state, intent, [], '2026-06-01')
+    // simulationMode: true required to access SIMULATED snapshots
+    const plan = buildPlan(state, intent, [], '2026-06-01', true)
     expect(plan.policySnapshotId).toBe('snap-2026-01')
     expect(plan.policyVersion).toBe('2026.01.1')
     expect(plan.policyHash).toBe('wf-kb-0012')
+  })
+
+  it('a plan computed under v2 WITHOUT simulation mode falls back to the authoritative v1 snapshot', () => {
+    const state = exampleState()
+    const intent = parseIntentDeterministic('I want to move abroad.')
+    // Without simulationMode, the SIMULATED 2026 snapshot is excluded
+    const plan = buildPlan(state, intent, [], '2026-06-01')
+    expect(plan.policySnapshotId).toBe('snap-2024-11') // falls back to authoritative
   })
 
   it('recomputing the same state+intent+asOf produces an identical plan (deterministic)', () => {

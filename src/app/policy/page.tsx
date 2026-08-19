@@ -27,6 +27,7 @@ interface SnapshotInfo {
   effectiveFrom: string
   effectiveTo?: string
   status: string
+  provenance: string
   notes: string
   programIds: string[]
   requirementIds: string[]
@@ -164,7 +165,7 @@ export default function PolicyPage() {
               <SelectContent>
                 {snapshots.map((s) => (
                   <SelectItem key={s.id} value={s.id}>
-                    {s.version} · {s.id} {s.status === "current" ? "(current)" : ""}
+                    {s.version} · {s.id} {s.status === "current" ? "(current)" : ""} {s.provenance === "SIMULATED" ? "⚠ SIMULATED" : ""}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -174,10 +175,14 @@ export default function PolicyPage() {
           {selectedSnapshot && (
             <div className="grid gap-4 lg:grid-cols-3">
               <Card className="border-border/60 bg-card/60 p-4 lg:col-span-1">
-                <h3 className="text-sm font-semibold">{selectedSnapshot.snapshot.version}</h3>
+                <div className="mb-2 flex items-center gap-2">
+                  <h3 className="text-sm font-semibold">{selectedSnapshot.snapshot.version}</h3>
+                  <ProvenanceBadge provenance={selectedSnapshot.snapshot.provenance} />
+                </div>
                 <p className="mt-1 text-xs text-muted-foreground">{selectedSnapshot.snapshot.notes}</p>
                 <div className="mt-3 space-y-1.5 text-xs">
                   <Row label="Status" value={selectedSnapshot.snapshot.status} />
+                  <Row label="Provenance" value={selectedSnapshot.snapshot.provenance} />
                   <Row label="Hash" value={selectedSnapshot.snapshot.hash} mono />
                   <Row label="Published" value={selectedSnapshot.snapshot.publishedAt} />
                   <Row label="Effective from" value={selectedSnapshot.snapshot.effectiveFrom} />
@@ -410,4 +415,24 @@ function fmtVal(v: unknown): string {
     return JSON.stringify(v).slice(0, 60)
   }
   return String(v)
+}
+
+function ProvenanceBadge({ provenance }: { provenance: string }) {
+  const styles: Record<string, string> = {
+    AUTHORITATIVE: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+    DERIVED: "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-400",
+    SIMULATED: "border-orange-500/40 bg-orange-500/10 text-orange-700 dark:text-orange-400",
+    TEST_FIXTURE: "border-muted-foreground/40 bg-muted/20 text-muted-foreground",
+  }
+  const labels: Record<string, string> = {
+    AUTHORITATIVE: "✓ Official",
+    DERIVED: "Derived",
+    SIMULATED: "⚠ Simulated",
+    TEST_FIXTURE: "Test fixture",
+  }
+  return (
+    <Badge variant="outline" className={cn("text-[10px] font-medium", styles[provenance] ?? styles.TEST_FIXTURE)}>
+      {labels[provenance] ?? provenance}
+    </Badge>
+  )
 }

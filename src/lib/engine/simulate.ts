@@ -32,11 +32,12 @@ export function runScenario(
   intent: Intent,
   spec: ScenarioSpec,
   asOfDate?: string | Date,
+  simulationMode: boolean = false,
 ): ScenarioResult {
   const modifiedState = spec.modify(cloneState(baselineState))
 
-  const baselineRoutes = generateRoutes(baselineState, intent, asOfDate)
-  const modifiedRoutes = generateRoutes(modifiedState, intent, asOfDate)
+  const baselineRoutes = generateRoutes(baselineState, intent, asOfDate, simulationMode)
+  const modifiedRoutes = generateRoutes(modifiedState, intent, asOfDate, simulationMode)
 
   const baselineBest = rankRoutes(baselineRoutes, intent)[0]
   const modifiedBest = rankRoutes(modifiedRoutes, intent)[0]

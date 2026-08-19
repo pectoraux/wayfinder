@@ -235,14 +235,28 @@ export interface PolicySnapshot {
   hash: string
   /** Status of the snapshot. */
   status: 'current' | 'superseded' | 'draft'
+  /** Provenance: is this authoritative law or a simulated scenario?
+   *  SIMULATED/TEST_FIXTURE snapshots are NEVER used by default for user
+   *  recommendations, eligibility decisions, or current-policy displays. */
+  provenance: PolicyProvenance
   /** Human changelog. */
   notes: string
+  /** Parent version this one supersedes (for the publication chain). */
+  parentVersionId?: string
   /** The entities belonging to this snapshot. */
   programIds: string[]
   requirementIds: string[]
   transitionIds: string[]
   evidenceIds: string[]
 }
+
+/** Provenance classification — the most important safety field in the system.
+ *  Only AUTHORITATIVE snapshots may be used for user-facing current policy. */
+export type PolicyProvenance =
+  | 'AUTHORITATIVE'     // real, verified, currently-in-force law
+  | 'DERIVED'           // derived from authoritative sources but not itself primary law
+  | 'SIMULATED'         // hypothetical projection for testing/demonstration
+  | 'TEST_FIXTURE'      // synthetic data for automated tests
 
 // ===========================================================================
 // 7. SOURCE + SOURCE SNAPSHOT (ingestion abstraction)
@@ -252,11 +266,23 @@ export type SourceType =
   | 'GOVERNMENT_PAGE'
   | 'LEGISLATION'
   | 'REGULATION'
+  | 'OFFICIAL_PORTAL'
   | 'EMBASSY'
+  | 'CONSULATE'
   | 'OFFICIAL_FORM'
   | 'POLICY_MANUAL'
   | 'OFFICIAL_DATA'
 
+/** Source trust model. Deliberately categorical, not a fake numeric score. */
+export type SourceTrustLevel =
+  | 'OFFICIAL_PRIMARY'        // the primary legal authority (e.g. IRCC, BAMF, the statute itself)
+  | 'OFFICIAL_SECONDARY'      // an official body re-explaining primary law (e.g. Make it in Germany)
+  | 'RECOGNIZED_INSTITUTION'  // a body with statutory recognition (e.g. ZAB, Tech Nation)
+  | 'HIGH_QUALITY_SECONDARY'  // reputable but not the authority (e.g. a law firm summary)
+  | 'COMMUNITY'               // user-contributed, needs verification
+  | 'UNKNOWN'
+
+/** Legacy alias for backwards compat with existing code. */
 export type TrustLevel = 'authoritative' | 'official' | 'corroborated' | 'secondary'
 
 export interface Source {
@@ -265,14 +291,37 @@ export interface Source {
   sourceType: SourceType
   /** The publishing authority, e.g. "BAMF", "IRCC". */
   authority: string
+  /** Human-readable name of the source. */
+  name: string
+  /** Canonical URL — the stable, deduplicated URL for this source. */
+  canonicalUrl: string
+  /** Legacy alias for canonicalUrl. */
   url: string
   /** How content is retrieved. */
   retrievalMethod: 'manual' | 'http_fetch' | 'api'
-  lastChecked?: string
-  trustLevel: TrustLevel
+  /** Categorical trust level (NOT a fake numeric score). */
+  trustLevel: SourceTrustLevel
+  /** Is this source actively monitored? */
+  active: boolean
+  /** How often to poll this source, in hours. */
+  monitoringFrequencyHours: number
+  /** Last time a fetch was attempted (success or failure). */
+  lastCheckedAt?: string
+  /** Last time a fetch successfully returned content. */
+  lastSuccessfulFetchAt?: string
   /** Link to the Evidence record(s) derived from this source. */
   evidenceIds: string[]
 }
+
+export type RetrievalStatus =
+  | 'OK'
+  | 'HTTP_ERROR'
+  | 'TIMEOUT'
+  | 'CONTENT_TYPE_REJECTED'
+  | 'PARSE_ERROR'
+  | 'REDIRECT_LOOP'
+  | 'BLOCKED'
+  | 'UNKNOWN'
 
 export interface SourceSnapshot {
   id: string
@@ -280,10 +329,69 @@ export interface SourceSnapshot {
   retrievedAt: string
   /** SHA-256 of the retrieved content (or normalized representation). */
   contentHash: string
+  /** MIME type of the retrieved content. */
+  contentType: string
+  /** Byte length of the retrieved content. */
+  contentLength: number
+  /** Whether the fetch succeeded. */
+  retrievalStatus: RetrievalStatus
+  /** HTTP status code (if applicable). */
+  statusCode?: number
   /** Where the raw content is stored (object storage path / inline). */
+  rawStorageLocation: string
+  /** Legacy alias. */
   contentLocation: string
+  /** Version of the parser/normalizer used. */
+  parserVersion: string
   /** Diff vs the previous snapshot, if any. */
-  changeType?: 'TEXT_CHANGED' | 'POSSIBLE_POLICY_CHANGE' | 'VERIFIED_POLICY_CHANGE' | 'UNCHANGED'
+  changeType?: ChangeClassification
+  /** Human-readable diff summary (before/after context). */
+  diffSummary?: string
+  /** The actual content (for small sources; large ones use rawStorageLocation). */
+  content?: string
+}
+
+/** Expanded change classification (8 levels).
+ *  Mechanical: UNCHANGED, TEXT_CHANGED, STRUCTURAL_CHANGED, FETCH_ERROR.
+ *  AI-assisted: POSSIBLE_POLICY_CHANGE, LIKELY_POLICY_CHANGE.
+ *  Human-verified: VERIFIED_POLICY_CHANGE. */
+export type ChangeClassification =
+  | 'UNCHANGED'
+  | 'TEXT_CHANGED'
+  | 'STRUCTURAL_CHANGED'
+  | 'POSSIBLE_POLICY_CHANGE'
+  | 'LIKELY_POLICY_CHANGE'
+  | 'VERIFIED_POLICY_CHANGE'
+  | 'FETCH_ERROR'
+
+/** A human-readable document diff with context. */
+export interface DocumentDiff {
+  before: string
+  after: string
+  /** Changed sections with surrounding context. */
+  sections: DiffSection[]
+}
+
+export interface DiffSection {
+  heading?: string
+  before: string
+  after: string
+  /** Line-level changes. */
+  lines: { type: 'context' | 'added' | 'removed'; text: string }[]
+}
+
+/** Result of a single source fetch. */
+export interface FetchResult {
+  success: boolean
+  content: string
+  contentHash: string
+  retrievedAt: string
+  statusCode?: number
+  contentType?: string
+  contentLength: number
+  retrievalStatus: RetrievalStatus
+  error?: string
+  finalUrl?: string
 }
 
 // ===========================================================================
@@ -374,4 +482,183 @@ export interface PolicyImpact {
   affectedDecisionRecordIds: string[]
   /** Human summary. */
   summary: string
+}
+
+// ===========================================================================
+// 11. CANDIDATE FACTS (AI-extracted, pending human verification)
+// ===========================================================================
+
+/** What kind of entity a candidate fact refers to. */
+export type CandidateEntityType =
+  | 'requirement'
+  | 'program'
+  | 'transition'
+  | 'status'
+
+/** What kind of change the candidate proposes. */
+export type CandidateChangeKind =
+  | 'threshold_changed'
+  | 'requirement_added'
+  | 'requirement_removed'
+  | 'program_opened'
+  | 'program_suspended'
+  | 'program_closed'
+  | 'transition_changed'
+  | 'application_deadline_changed'
+  | 'work_rights_changed'
+  | 'family_rights_changed'
+  | 'physical_presence_requirement_changed'
+  | 'processing_time_changed'
+
+/** A candidate fact extracted from a source snapshot by the AI. Enters as
+ *  AI_EXTRACTED and CANNOT become authoritative until a human approves it. */
+export interface CandidateFact {
+  id: string
+  /** The source snapshot this candidate was extracted from. */
+  sourceSnapshotId: string
+  jurisdictionId: string
+  entityType: CandidateEntityType
+  /** The normalized entity id this candidate refers to (if known). */
+  entityId?: string
+  /** Human label of the affected entity. */
+  entityLabel: string
+  changeKind: CandidateChangeKind
+  /** The field that changed (e.g. "amount", "effectiveFrom"). */
+  field?: string
+  oldValue?: unknown
+  newValue?: unknown
+  effectiveFrom?: string
+  effectiveTo?: string
+  /** Evidence excerpt from the source. */
+  evidence: string
+  /** The source URL this candidate was derived from. */
+  sourceUrl: string
+  /** AI model that produced this candidate. */
+  model: string
+  /** Version of the extraction prompt. */
+  promptVersion: string
+  /** Model confidence 0..1. NOT legal certainty — labeled as model confidence. */
+  confidence: number
+  /** Current review status. */
+  extractionStatus: ExtractionStatus
+  /** AI's plain-language interpretation of what changed. */
+  aiInterpretation?: string
+  createdAt: string
+  /** Admin who reviewed, if any. */
+  reviewedBy?: string
+  reviewedAt?: string
+  /** Reason for rejection / needs-evidence, if applicable. */
+  reviewNote?: string
+}
+
+/** The verification state machine. Only APPROVED may modify authoritative
+ *  policy. The transition rules are enforced in extraction.ts. */
+export type ExtractionStatus =
+  | 'AI_EXTRACTED'
+  | 'PENDING_REVIEW'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'NEEDS_MORE_EVIDENCE'
+  | 'DUPLICATE'
+  | 'SUPERSEDED'
+
+// ===========================================================================
+// 12. POLICY PUBLICATION
+// ===========================================================================
+
+/** A record of a policy version publication — the output of approving a
+ *  candidate fact. Never mutates an existing published version. */
+export interface PolicyPublication {
+  id: string
+  /** The new policy version id created by this publication. */
+  policyVersionId: string
+  /** The parent version this one supersedes. */
+  parentVersionId: string
+  /** The candidate fact(s) that triggered this publication. */
+  candidateFactIds: string[]
+  /** The admin who approved the publication. */
+  approvedBy: string
+  approvedAt: string
+  /** Content hash of the new version. */
+  contentHash: string
+  /** Provenance of the new version. */
+  provenance: PolicyProvenance
+  /** Consistency check results (all must pass for publication). */
+  consistencyChecks: ConsistencyCheckResult[]
+  /** Human changelog. */
+  notes: string
+}
+
+export interface ConsistencyCheckResult {
+  name: string
+  passed: boolean
+  /** Error details if failed. */
+  details?: string
+}
+
+// ===========================================================================
+// 13. ADMIN AUDIT
+// ===========================================================================
+
+export type AdminAction =
+  | 'APPROVE_CANDIDATE'
+  | 'REJECT_CANDIDATE'
+  | 'REQUEST_MORE_EVIDENCE'
+  | 'MARK_DUPLICATE'
+  | 'MARK_SOURCE_UNRELIABLE'
+  | 'PUBLISH_POLICY_VERSION'
+  | 'ALTER_SOURCE_MONITORING'
+  | 'MARK_SOURCE_TRUSTED'
+
+export interface AdminAuditRecord {
+  id: string
+  adminId: string
+  adminEmail: string
+  action: AdminAction
+  /** Entity id the action targets (candidate id, source id, etc.). */
+  entityId: string
+  entityType: string
+  /** Before/after state for the action. */
+  before?: unknown
+  after?: unknown
+  timestamp: string
+  reason?: string
+}
+
+// ===========================================================================
+// 14. PLAN IMPACT (recomputation after a verified policy change)
+// ===========================================================================
+
+export type PlanImpactLevel =
+  | 'NO_MATERIAL_CHANGE'
+  | 'MINOR_CHANGE'
+  | 'ROUTE_DEGRADED'
+  | 'ROUTE_INVALIDATED'
+  | 'NEW_BETTER_ROUTE'
+
+export interface PlanImpact {
+  level: PlanImpactLevel
+  /** The user-facing explanation. */
+  whatChanged: string
+  whyItMatters: string
+  whatHappensToPlan: string
+  alternativesOpened: string[]
+  alternativesClosed: string[]
+  recommendedAction: string
+  /** Decision record id of the affected plan. */
+  decisionRecordId?: string
+}
+
+// ===========================================================================
+// 15. POLICY WATCHLIST
+// ===========================================================================
+
+export interface PolicyWatchlistEntry {
+  id: string
+  userId: string
+  /** What the user is watching: a country, program, or route. */
+  watchType: 'country' | 'program' | 'route'
+  watchId: string
+  watchLabel: string
+  createdAt: string
 }

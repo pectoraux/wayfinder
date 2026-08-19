@@ -212,11 +212,18 @@ function riskBand(scores: RouteScores, eligibility: ReturnType<typeof evaluatePa
 // Route generation
 // ---------------------------------------------------------------------------
 
-export function generateRoutes(state: MobilityState, _intent: Intent, asOfDate?: string | Date): Route[] {
+export function generateRoutes(
+  state: MobilityState,
+  _intent: Intent,
+  asOfDate?: string | Date,
+  simulationMode: boolean = false,
+): Route[] {
   const routes: Route[] = []
 
   // Resolve the active policy snapshot for the requested date.
-  const snapshot = getPolicySnapshot('global', asOfDate ?? new Date())
+  // CRITICAL: by default, simulated snapshots are EXCLUDED. Only explicit
+  // simulation mode (admin/dev historical exploration) can access them.
+  const snapshot = getPolicySnapshot('global', asOfDate ?? new Date(), simulationMode)
   const snapshotId = snapshot.id
 
   for (const pathway of PATHWAYS) {

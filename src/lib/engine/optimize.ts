@@ -232,14 +232,15 @@ export function buildPlan(
   intent: Intent,
   scenarios: ScenarioSpec[] = [],
   asOfDate?: string | Date,
+  simulationMode: boolean = false,
 ): MobilityPlan {
-  const routes = generateRoutes(state, intent, asOfDate)
+  const routes = generateRoutes(state, intent, asOfDate, simulationMode)
   const frontier = computeFrontier(routes, intent)
   const ranked = rankRoutes(routes, intent)
   const alternativeIntents = discoverAlternativeIntents(state, intent, routes)
   const recommendation = buildRecommendation(state, intent, ranked, alternativeIntents)
 
-  const scenarioResults: ScenarioResult[] = scenarios.map((spec) => runScenario(state, intent, spec, asOfDate))
+  const scenarioResults: ScenarioResult[] = scenarios.map((spec) => runScenario(state, intent, spec, asOfDate, simulationMode))
 
   const evidenceIds = Array.from(new Set(routes.flatMap((r) => r.evidenceIds)))
 
@@ -249,7 +250,7 @@ export function buildPlan(
 
   // Resolve the policy snapshot used, for reproducibility
   const effectiveAsOf = asOfDate ?? new Date().toISOString()
-  const snapshot = getPolicySnapshot('global', effectiveAsOf)
+  const snapshot = getPolicySnapshot('global', effectiveAsOf, simulationMode)
 
   return {
     generatedAt: new Date().toISOString(),

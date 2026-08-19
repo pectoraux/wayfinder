@@ -13,6 +13,7 @@ const PUBLIC_PATHS = [
   "/signup",
   "/api/auth",
   "/api/waitlist",
+  "/api/cron", // cron jobs use their own CRON_SECRET bearer auth
   "/_next",
   "/favicon.ico",
   "/robots.txt",
