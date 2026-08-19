@@ -158,3 +158,29 @@ Stage Summary:
 - Plan versioning preserved: old plans remain immutable, new plans record the runtime policy version + hash.
 - Alerts are material-only (no noise), deduplicated (idempotency key), and traceable (every alert links to a publication → candidate → evidence → source).
 - Simulated policy remains impossible to use accidentally in production mode (provenance filter in the resolver).
+
+---
+Task ID: 23-25
+Agent: main (founding CTO)
+Task: Fix the runtime policy overlay loop — remove hardcoded snapshots, wire publication→propagation→alert, correct the resolver.
+
+Work Log:
+- Inspected the actual repository and found CRITICAL BUGS: alerts.ts hardcoded 'snap-2026-01' and used simulationMode=true in production impact analysis; impact.ts had the same bugs; runtime-resolver.ts applied overlays against global static arrays instead of base-snapshot entities; runtimePolicyHash only hashed ids not resolved state; publication flow didn't invoke alert generation.
+- BUG FIX #1: Removed hardcoded 'snap-2026-01' from alerts.ts line 121 and impact.ts. Both now use buildPlanWithRuntimePolicy (the runtime resolver) with simulationMode=false for all production paths.
+- BUG FIX #2: Fixed runtime-resolver.ts to load BASE SNAPSHOT entities via getRequirementsInSnapshot/getProgramsInSnapshot/getTransitionsInSnapshot instead of the global REQUIREMENTS/PROGRAMS/TRANSITIONS arrays. This prevents mixing a 2024 base with 2026 global entities + overlay.
+- Fixed runtimePolicyHash to hash the RESOLVED entity state (requirements + programs + transitions, canonicalized by id and filtered to policy-relevant fields), not just base+overlayIds. Two different overlays producing the same resolved state would hash the same; different resolved states hash differently.
+- Added validateOverlayAgainstBase: checks entity exists in base, oldValue matches current base value (fail closed if mismatch), entity type matches, provenance is allowed. Malformed/invalid overlays are skipped (never fail open).
+- Added deterministic overlay ordering: effectiveFrom → publicationId.
+- Added PolicyContext canonical object (jurisdiction, asOf, baseSnapshotId, activeOverlayIds, runtimeVersionId, runtimeHash, provenance, simulationMode). Alert candidates now carry previousPolicyContext + newPolicyContext.
+- WIRED the publication → propagation pipeline: candidates/[id] route now invokes processPolicyPublication after approval. This idempotent job: (1) finds affected DecisionRecords, (2) recomputes each plan under the new runtime policy, (3) creates a new plan version with trigger=POLICY_CHANGE + previousRecordId + policyPublicationId, (4) classifies impact via deterministic plan diff, (5) creates alerts for MATERIAL impacts (idempotent via idempotencyKey), (6) processes watchlist alerts.
+- Added plan-diff.ts: deterministic diffPlans function computing bestRouteChanged, routesOpened/Closed, eligibilityChanges, scoreChanges, costChanges, timelineChanges, newBlockers, resolvedBlockers. Alert generation now consumes the diff (not assumptions).
+- Added replay.ts: replayDecision reconstructs a plan from saved state+intent+asOf; plansMatch verifies reproducibility (same hash, best route, scores).
+- Rollback route now re-invokes propagation to restore original state.
+- 17 new tests (136 total): no hardcoded snapshots in production, base-aware overlay validation (correct/wrong/missing oldValue, non-existent entity), hash correctness (resolved state), plan diff, replay reproducibility, overlay immutability, base-snapshot-aware resolution.
+- Verification: lint clean, 136/136 tests pass, main flow works locally + on Vercel.
+
+Stage Summary:
+- The loop is now CORRECT: publication → runtime resolver (base + overlay, base-aware, validated) → route recomputation (no simulationMode) → plan versioning (new immutable version) → impact classification (from deterministic diff) → alert (idempotent, deduplicated) → user sees changed route.
+- No hardcoded snapshot IDs in any production path. No simulationMode=true in any production impact analysis.
+- The runtime resolver is the single source of policy truth: all consumers go through it, it applies overlays to the correct base snapshot's entities, and the hash covers the actual resolved state.
+- Publication propagation is automatic and idempotent: approving a candidate triggers the full pipeline without a second manual call.
