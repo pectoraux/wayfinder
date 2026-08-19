@@ -166,6 +166,11 @@ export async function processPolicyPublication(
       }
     }
 
+    // 3b. Load the PolicyEvent for this publication (if it exists)
+    const policyEvent = await db.policyEvent.findFirst({
+      where: { publicationId },
+    })
+
     // 4. Cursor-based pagination: fetch a batch of affected records
     const cursor = propagation.lastProcessedRecordId
     const batch = await db.decisionRecord.findMany({
@@ -251,6 +256,7 @@ export async function processPolicyPublication(
               decisionRecordId: record.id,
               policyPublicationId: publicationId,
               policyChangeId: candidate.id,
+              policyEventId: policyEvent?.id ?? null,
               impactLevel: impact.level,
               severity,
               title,
@@ -278,7 +284,7 @@ export async function processPolicyPublication(
 
     // 6. Process watchlist alerts (users watching affected programs without plans)
     if (candidate) {
-      await processWatchlistAlerts(publicationId, candidate, db)
+      await processWatchlistAlerts(publicationId, candidate, db, policyEvent)
     }
 
     // 7. Update propagation status
@@ -351,6 +357,7 @@ async function processWatchlistAlerts(
   publicationId: string,
   candidate: CandidateFact,
   db: any,
+  policyEvent: any,
 ): Promise<void> {
   const watchType = candidate.entityType === 'program' ? 'program' : 'country'
   const watchId = candidate.entityId ?? candidate.jurisdictionId
@@ -372,6 +379,7 @@ async function processWatchlistAlerts(
         userId: w.userId,
         policyPublicationId: publicationId,
         policyChangeId: candidate.id,
+        policyEventId: policyEvent?.id ?? null,
         impactLevel: 'MINOR_CHANGE',
         severity: 'NOTICE',
         title: `Policy change: ${candidate.entityLabel}`,

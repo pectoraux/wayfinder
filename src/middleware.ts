@@ -13,7 +13,10 @@ const PUBLIC_PATHS = [
   "/signup",
   "/api/auth",
   "/api/waitlist",
-  "/api/cron", // cron jobs use their own CRON_SECRET bearer auth
+  "/api/health",
+  "/api/cron",
+  "/api/policy/events", // public policy event feed + detail
+  "/policy/events", // public policy event pages
   "/_next",
   "/favicon.ico",
   "/robots.txt",

@@ -130,6 +130,48 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         },
       })
 
+      // Create the canonical PolicyEvent (first-class domain object)
+      const { buildPolicyEvent } = await import('@/lib/policy/events')
+      const event = buildPolicyEvent({
+        publicationId: publication.id,
+        candidateFactId: candidate.id,
+        jurisdictionId: candidate.jurisdictionId,
+        entityType: candidate.entityType as any,
+        entityId: candidate.entityId ?? candidate.entityLabel,
+        entityLabel: candidate.entityLabel,
+        changeKind: candidate.changeKind,
+        field: candidate.field ?? undefined,
+        oldValue: candidate.oldValue ? JSON.parse(candidate.oldValue) : undefined,
+        newValue: candidate.newValue ? JSON.parse(candidate.newValue) : undefined,
+        effectiveFrom: candidate.effectiveFrom ?? undefined,
+        evidence: candidate.evidence,
+        sourceUrl: candidate.sourceUrl,
+        aiInterpretation: candidate.aiInterpretation ?? undefined,
+        provenance: 'AUTHORITATIVE',
+      })
+      const dbEvent = await db.policyEvent.create({
+        data: {
+          publicationId: publication.id,
+          candidateFactId: candidate.id,
+          jurisdictionId: event.jurisdictionId,
+          entityType: event.entityType,
+          entityId: event.entityId,
+          entityLabel: event.entityLabel,
+          changeType: event.changeType,
+          title: event.title,
+          summary: event.summary,
+          oldValue: event.oldValue != null ? JSON.stringify(event.oldValue) : null,
+          newValue: event.newValue != null ? JSON.stringify(event.newValue) : null,
+          effectiveFrom: event.effectiveFrom,
+          effectiveTo: event.effectiveTo ?? null,
+          evidence: event.evidence,
+          sourceUrl: event.sourceUrl,
+          provenance: event.provenance,
+          status: 'PUBLISHED',
+          publishedAt: new Date(),
+        },
+      })
+
       // Invalidate the runtime policy cache so the new overlay takes effect
       const { invalidateRuntimePolicyCache } = await import('@/lib/policy/runtime-resolver')
       invalidateRuntimePolicyCache()

@@ -235,3 +235,15 @@ Stage Summary:
 - Route stability is visible on route detail: historical change count + stability label + disclaimer.
 - The user experience now demonstrates: "Wayfinder noticed that your route changed" — with plan history, diff, alerts, and actionable alternatives.
 - Vercel auto-deploy webhook appears to have stopped triggering for the latest commits; the code is pushed to GitHub and all features verified locally.
+
+---
+Task ID: event-pages
+Agent: frontend-styling-expert
+Task: Build policy event feed + detail pages
+
+Work Log:
+- Created /policy/events feed page
+- Created /policy/events/[id] detail page
+
+Stage Summary:
+- Both pages created

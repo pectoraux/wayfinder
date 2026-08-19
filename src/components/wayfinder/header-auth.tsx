@@ -58,6 +58,9 @@ export function HeaderAuth() {
       </Button>
 
       <div className="hidden items-center gap-1.5 sm:flex">
+        <Button variant="ghost" size="sm" onClick={() => router.push("/policy/events")} className="h-7 gap-1.5 text-xs">
+          <GitBranch className="h-3 w-3" /> Events
+        </Button>
         <Button variant="ghost" size="sm" onClick={() => router.push("/policy")} className="h-7 gap-1.5 text-xs">
           <GitBranch className="h-3 w-3" /> Policy
         </Button>

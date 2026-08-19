@@ -849,3 +849,60 @@ export interface PropagationResult {
 
 /** Plan lifecycle status. */
 export type PlanStatus = 'ACTIVE' | 'SUPERSEDED' | 'ARCHIVED'
+
+// ===========================================================================
+// 18. POLICY EVENT (first-class domain object)
+// ===========================================================================
+
+/** The canonical, user-facing representation of a verified policy change.
+ *  Created when a PolicyPublication is published. Referenced by alerts,
+ *  watchlists, route history, plan history, and the policy explorer.
+ *
+ *  Lifecycle: PUBLISHED → SUPERSEDED | CORRECTED
+ *  Never created directly from AI extraction — only from a verified publication. */
+export type PolicyEventStatus = 'PUBLISHED' | 'SUPERSEDED' | 'CORRECTED'
+
+export type PolicyEventChangeType =
+  | 'threshold_changed'
+  | 'requirement_added'
+  | 'requirement_removed'
+  | 'program_opened'
+  | 'program_suspended'
+  | 'program_closed'
+  | 'transition_changed'
+  | 'processing_time_changed'
+  | 'fee_changed'
+  | 'other'
+
+export interface PolicyEvent {
+  id: string
+  /** The publication that created this event. */
+  publicationId: string
+  /** The candidate fact that was approved to produce the publication. */
+  candidateFactId: string
+  jurisdictionId: string
+  entityType: 'requirement' | 'program' | 'transition' | 'status'
+  entityId: string
+  entityLabel: string
+  changeType: PolicyEventChangeType
+  /** User-facing title, e.g. "Germany Blue Card salary threshold increased". */
+  title: string
+  /** Concise user-facing summary. */
+  summary: string
+  oldValue?: unknown
+  newValue?: unknown
+  effectiveFrom: string
+  effectiveTo?: string
+  /** The source snapshot that produced the candidate. */
+  sourceSnapshotId?: string
+  /** Evidence excerpt from the authoritative source. */
+  evidence: string
+  sourceUrl: string
+  /** Provenance: AUTHORITATIVE for real verified events, SIMULATED for test fixtures. */
+  provenance: PolicyProvenance
+  status: PolicyEventStatus
+  createdAt: string
+  publishedAt?: string
+  /** If superseded, the id of the event that replaced this one. */
+  supersededByEventId?: string
+}

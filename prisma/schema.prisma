@@ -330,18 +330,19 @@ model PolicyAlert {
   id            String   @id @default(cuid())
   userId        String
   decisionRecordId String?
-  policyPublicationId String? // references the PolicyPublication that triggered this
-  policyChangeId String   // references the CandidateFact that was approved
-  impactLevel   String   // NO_MATERIAL_CHANGE | MINOR_CHANGE | ROUTE_DEGRADED | ROUTE_INVALIDATED | NEW_BETTER_ROUTE
-  severity      String   @default("NOTICE") // INFO | NOTICE | IMPORTANT | CRITICAL
+  policyPublicationId String?
+  policyChangeId String
+  /// The canonical PolicyEvent this alert is about. This is the single source
+  /// of truth — the alert references the event, not a separate representation.
+  policyEventId String?
+  impactLevel   String
+  severity      String   @default("NOTICE")
   title         String
   whatChanged   String
   whyItMatters  String
   recommendedAction String
-  alternativeRoutes String? // JSON array of route labels
+  alternativeRoutes String?
   body          String
-  /// Idempotency key: userId + publicationId + planId + impactType — prevents
-  /// duplicate alerts when the monitoring job runs twice.
   idempotencyKey String @unique
   read          Boolean  @default(false)
   readAt        DateTime?
@@ -351,6 +352,7 @@ model PolicyAlert {
   @@index([userId])
   @@index([read])
   @@index([severity])
+  @@index([policyEventId])
 }
 
 /// Durable record tracking the policy propagation process itself. Persists
@@ -388,4 +390,39 @@ model PolicyPropagation {
 
   @@index([publicationId])
   @@index([status])
+}
+
+/// A first-class, user-facing representation of a verified policy change.
+/// Created when a PolicyPublication is published. Referenced by alerts,
+/// watchlists, route history, plan history, and the policy explorer.
+/// Never created directly from AI extraction.
+model PolicyEvent {
+  id              String   @id @default(cuid())
+  publicationId   String
+  candidateFactId String
+  jurisdictionId  String
+  entityType      String   // requirement | program | transition | status
+  entityId        String
+  entityLabel     String
+  changeType      String   // threshold_changed | requirement_added | program_suspended | ...
+  title           String
+  summary         String
+  oldValue        String?  // JSON
+  newValue        String?  // JSON
+  effectiveFrom   String
+  effectiveTo     String?
+  sourceSnapshotId String?
+  evidence        String
+  sourceUrl       String
+  provenance      String   @default("AUTHORITATIVE")
+  status          String   @default("PUBLISHED") // PUBLISHED | SUPERSEDED | CORRECTED
+  supersededByEventId String?
+  createdAt       DateTime @default(now())
+  publishedAt     DateTime?
+
+  @@index([publicationId])
+  @@index([jurisdictionId])
+  @@index([status])
+  @@index([entityId])
+  @@index([provenance])
 }
