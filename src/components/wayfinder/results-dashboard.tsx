@@ -18,6 +18,7 @@ import { ProfileAnalysisSection } from '@/components/wayfinder/strategy/profile-
 import { IntentFrontierSection } from '@/components/wayfinder/strategy/intent-frontier-section'
 import { PreferenceQuestionCard } from '@/components/wayfinder/strategy/preference-question-card'
 import { StrategyDiffBanner, type StrategyDiff } from '@/components/wayfinder/strategy/strategy-diff-banner'
+import { StrategyStalenessBanner } from '@/components/wayfinder/strategy/strategy-staleness-banner'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -43,6 +44,9 @@ export function ResultsDashboard() {
   const mobilityState = useWayfinder((s) => s.mobilityState)
   const intent = useWayfinder((s) => s.intent)
   const scenarios = useWayfinder((s) => s.scenarios)
+  const strategyStaleness = useWayfinder((s) => s.strategyStaleness)
+  const strategyProvenance = useWayfinder((s) => s.strategyProvenance)
+  const recomputeStrategy = useWayfinder((s) => s.recomputeStrategy)
 
   const [savedId, setSavedId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -158,8 +162,23 @@ export function ResultsDashboard() {
       )}
       {strategy && (
         <>
+          {/* Staleness banner — surfaces structured STALE_POLICY / STALE_PROFILE
+              / STALE_INTENT / STALE_ENGINE / STALE_MULTIPLE. Never a single boolean. */}
+          <section className="mb-4">
+            <StrategyStalenessBanner
+              assessment={strategyStaleness}
+              onRecalculate={() => { void recomputeStrategy() }}
+              isRecalculating={strategyLoading}
+            />
+          </section>
+
           <section className="mb-6">
-            <StrategyHero strategy={strategy} />
+            <StrategyHero
+              strategy={strategy}
+              provenanceLabel={strategyProvenance
+                ? `engine ${strategyProvenance.strategyEngineVersion} · state v${strategyProvenance.mobilityStateVersion} · intent v${strategyProvenance.intentVersion}`
+                : undefined}
+            />
           </section>
 
           {/* Preference question — shown right after the hero */}

@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect } from 'react'
 import { useWayfinder } from '@/components/wayfinder/store'
 import { IntentInput } from '@/components/wayfinder/intent-input'
 import { IntakeFlow } from '@/components/wayfinder/intake-flow'
@@ -14,6 +15,15 @@ import { Compass, RotateCcw } from 'lucide-react'
 export default function Home() {
   const phase = useWayfinder((s) => s.phase)
   const reset = useWayfinder((s) => s.reset)
+  const loadActiveStrategy = useWayfinder((s) => s.loadActiveStrategy)
+
+  // On mount, load the user's active strategy (if any) so the structured
+  // staleness + provenance are surfaced from the server. This is NOT a new
+  // feature — it wires the existing staleness surface so returning users see
+  // the state of their previously-adopted strategy.
+  useEffect(() => {
+    void loadActiveStrategy()
+  }, [loadActiveStrategy])
 
   return (
     <div className="flex min-h-screen flex-col">

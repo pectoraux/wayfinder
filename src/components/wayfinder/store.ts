@@ -6,6 +6,8 @@ import { exampleState } from '@/lib/domain/state'
 import type { PlanNarrative } from '@/lib/ai/explanation'
 import type { ScenarioResult, ScenarioSpec } from '@/lib/engine/simulate'
 import type { Strategy } from '@/lib/strategy/types'
+import type { StalenessAssessment } from '@/lib/strategy/staleness'
+import type { StrategyProvenance } from '@/lib/strategy/types'
 
 type Phase = 'home' | 'intake' | 'computing' | 'results'
 
@@ -29,6 +31,10 @@ interface WayfinderState {
   activeObjective: string | null // the objective the user has adopted
   exploredObjective: string | null // an objective being previewed (not yet adopted)
   exploredStrategy: Strategy | null // the strategy computed for the explored objective
+  // Strategy provenance + staleness — surfaced from GET /api/strategy/adopt
+  activeRecordId: string | null
+  strategyProvenance: StrategyProvenance | null
+  strategyStaleness: StalenessAssessment | null
 
   setPhase: (p: Phase) => void
   setRawIntent: (s: string) => void
@@ -71,6 +77,9 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
   activeObjective: null,
   exploredObjective: null,
   exploredStrategy: null,
+  activeRecordId: null,
+  strategyProvenance: null,
+  strategyStaleness: null,
 
   setPhase: (p) => set({ phase: p }),
   setRawIntent: (s) => set({ rawIntent: s }),
@@ -342,18 +351,32 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
     })
     await get().syncActions()
 
-    // Persist to the DB (non-blocking)
-    fetch('/api/strategy/adopt', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        strategy: newStrategy,
-        plan: plan ?? undefined,
-        objectiveId: objective,
-        state: mobilityState,
-        intent: adoptedIntent,
-      }),
-    }).catch(() => { /* non-blocking */ })
+    // Persist to the DB (non-blocking), then reload the active strategy so the
+    // structured staleness + provenance are surfaced from the server.
+    try {
+      const res = await fetch('/api/strategy/adopt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          strategy: newStrategy,
+          plan: plan ?? undefined,
+          objectiveId: objective,
+          state: mobilityState,
+          intent: adoptedIntent,
+        }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data?.provenance) {
+          set({
+            activeRecordId: data.recordId ?? null,
+            strategyProvenance: data.provenance ?? null,
+            // A freshly-adopted strategy is always CURRENT — clear any stale banner.
+            strategyStaleness: null,
+          })
+        }
+      }
+    } catch { /* non-blocking */ }
   },
 
   clearExplored: () => set({ exploredObjective: null, exploredStrategy: null }),
@@ -367,6 +390,9 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
         set({
           strategy: data.strategy as Strategy,
           activeObjective: data.objectiveId ?? null,
+          activeRecordId: data.recordId ?? null,
+          strategyProvenance: data.provenance ?? null,
+          strategyStaleness: data.staleness ?? null,
         })
       }
     } catch { /* non-blocking */ }
@@ -386,6 +412,10 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
       if (data?.updatedState) {
         set({ mobilityState: data.updatedState })
         await get().recomputeStrategy()
+        // After a profile change, the previously-adopted strategy is now
+        // STALE_PROFILE (at minimum). Reload the active-strategy endpoint to
+        // surface the structured staleness banner.
+        await get().loadActiveStrategy()
       }
     } catch (e) {
       console.error('updateProfile', e)
@@ -413,5 +443,8 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
       activeObjective: null,
       exploredObjective: null,
       exploredStrategy: null,
+      activeRecordId: null,
+      strategyProvenance: null,
+      strategyStaleness: null,
     }),
 }))

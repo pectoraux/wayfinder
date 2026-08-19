@@ -236,6 +236,41 @@ export interface UncertaintyAssessment {
 // 8. STRATEGY — the composite intelligence output
 // ===========================================================================
 
+/**
+ * Canonical strategy provenance: the exact inputs that produced a strategy.
+ *
+ * Every persisted Strategy/Plan recommendation must be answerable:
+ *   "Which user state, intent, policy, and strategy-engine version produced this?"
+ *
+ * This object is the answer. It is stored alongside the strategy snapshot and
+ * on the DecisionRecord so the recommendation can be reconstructed and audited
+ * even after the underlying inputs change.
+ */
+export interface StrategyProvenance {
+  /** The strategy engine version (e.g. '1.0.0'). */
+  strategyEngineVersion: string
+  /** The runtime policy version id (base + overlay count). */
+  runtimePolicyVersion: string
+  /** The deterministic hash of the resolved runtime policy. */
+  runtimePolicyHash: string
+  /** The as-of date the strategy was computed for (ISO). */
+  asOfDate: string
+  /** The MobilityStateSnapshot id this strategy was computed against. */
+  mobilityStateSnapshotId: string
+  /** The MobilityStateSnapshot.version this strategy was computed against. */
+  mobilityStateVersion: number
+  /** The IntentRecord id this strategy was computed against. */
+  intentRecordId: string
+  /** The IntentRecord.version this strategy was computed against. */
+  intentVersion: number
+  /** The objective this strategy optimized for (e.g. 'residence'). */
+  objectiveId: string
+  /** The objective version (immutable objective/intention record version). */
+  objectiveVersion: number
+  /** When this strategy was generated (ISO). */
+  generatedAt: string
+}
+
 export interface Strategy {
   /** The user's current state. */
   state: MobilityState
@@ -278,4 +313,25 @@ export interface Strategy {
   }
   /** The strategy engine version. */
   strategyEngineVersion?: string
+
+  // -------------------------------------------------------------------------
+  // Canonical provenance — the exact inputs that produced this strategy.
+  // These fields let the system answer:
+  //   "Which profile snapshot did this use?"
+  //   "Which intent version did this use?"
+  //   "Which objective did this optimize?"
+  //   "Which policy + engine version produced this?"
+  // -------------------------------------------------------------------------
+  /** The MobilityStateSnapshot.version this strategy was computed against. */
+  mobilityStateVersion?: number
+  /** The MobilityStateSnapshot id this strategy was computed against. */
+  mobilityStateSnapshotId?: string
+  /** The IntentRecord.version this strategy was computed against. */
+  intentVersion?: number
+  /** The IntentRecord id this strategy was computed against. */
+  intentRecordId?: string
+  /** The objective this strategy optimized for (e.g. 'residence'). */
+  objectiveId?: string
+  /** The objective version (immutable objective/intention record version). */
+  objectiveVersion?: number
 }

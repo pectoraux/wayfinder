@@ -14,6 +14,10 @@ import type {
 import { generateRoutes, compositeUtility } from './routes'
 import { rankRoutes } from './optimize'
 
+// Re-export ScenarioResult so callers can import it from this module
+// (it's defined in domain/types but historically imported from here).
+export type { ScenarioResult } from '@/lib/domain/types'
+
 export interface ScenarioSpec {
   id: string
   label: string

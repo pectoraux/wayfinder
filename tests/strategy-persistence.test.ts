@@ -1,7 +1,11 @@
 // Tests for strategy persistence, staleness, and profile editing.
+//
+// These tests cover the staleness engine + reproducibility invariants that do
+// not require DB access. The DB-backed integrity tests (adoption atomicity,
+// concurrent profile updates, replay) live in tests/strategy-integrity.test.ts.
 
 import { describe, it, expect } from 'vitest'
-import { getStrategyStaleness, getFullStrategyStaleness } from '@/lib/strategy/staleness'
+import { getStrategyStaleness, getFullStrategyStaleness, deriveStalenessStatus } from '@/lib/strategy/staleness'
 import { STRATEGY_ENGINE_VERSION } from '@/lib/strategy/planning-context'
 import { buildStrategy } from '@/lib/strategy'
 import { exampleState } from '@/lib/domain/state'
@@ -17,10 +21,93 @@ const routes = generateRoutes(state, intent, '2025-06-01')
 const strategy = buildStrategy(state, intent, routes)
 
 // ===========================================================================
-// 1. STALENESS ENGINE
+// 1. STALENESS ENGINE — deriveStalenessStatus (pure function)
 // ===========================================================================
 
-describe('Strategy staleness', () => {
+describe('Staleness status derivation (pure)', () => {
+  it('returns CURRENT when no dimensions mismatch', () => {
+    const result = deriveStalenessStatus({
+      policy: false, profile: false, intent: false, engine: false,
+    })
+    expect(result.status).toBe('CURRENT')
+    expect(result.shouldRecalculate).toBe(false)
+    expect(result.dimensions).toEqual({
+      policy: false, profile: false, intent: false, engine: false,
+    })
+  })
+
+  it('returns STALE_POLICY when only policy mismatches', () => {
+    const result = deriveStalenessStatus({
+      policy: true, profile: false, intent: false, engine: false,
+    })
+    expect(result.status).toBe('STALE_POLICY')
+    expect(result.shouldRecalculate).toBe(true)
+    expect(result.dimensions.policy).toBe(true)
+    expect(result.dimensions.profile).toBe(false)
+    expect(result.reasons).toHaveLength(1)
+    expect(result.reasons[0]).toMatch(/policy/i)
+  })
+
+  it('returns STALE_PROFILE when only profile mismatches', () => {
+    const result = deriveStalenessStatus({
+      policy: false, profile: true, intent: false, engine: false,
+    })
+    expect(result.status).toBe('STALE_PROFILE')
+    expect(result.dimensions.profile).toBe(true)
+    expect(result.reasons[0]).toMatch(/profile/i)
+  })
+
+  it('returns STALE_INTENT when only intent mismatches', () => {
+    const result = deriveStalenessStatus({
+      policy: false, profile: false, intent: true, engine: false,
+    })
+    expect(result.status).toBe('STALE_INTENT')
+    expect(result.dimensions.intent).toBe(true)
+    expect(result.reasons[0]).toMatch(/priorit/i)
+  })
+
+  it('returns STALE_ENGINE when only engine mismatches', () => {
+    const result = deriveStalenessStatus({
+      policy: false, profile: false, intent: false, engine: true,
+    })
+    expect(result.status).toBe('STALE_ENGINE')
+    expect(result.dimensions.engine).toBe(true)
+    expect(result.reasons[0]).toMatch(/engine/i)
+  })
+
+  it('returns STALE_MULTIPLE when 2+ dimensions mismatch', () => {
+    const result = deriveStalenessStatus({
+      policy: true, profile: true, intent: false, engine: false,
+    })
+    expect(result.status).toBe('STALE_MULTIPLE')
+    expect(result.shouldRecalculate).toBe(true)
+    expect(result.reasons).toHaveLength(2)
+  })
+
+  it('returns STALE_MULTIPLE when all 4 dimensions mismatch', () => {
+    const result = deriveStalenessStatus({
+      policy: true, profile: true, intent: true, engine: true,
+    })
+    expect(result.status).toBe('STALE_MULTIPLE')
+    expect(result.reasons).toHaveLength(4)
+  })
+
+  it('exposes per-dimension flags even on STALE_MULTIPLE', () => {
+    const result = deriveStalenessStatus({
+      policy: true, profile: false, intent: true, engine: false,
+    })
+    expect(result.status).toBe('STALE_MULTIPLE')
+    expect(result.dimensions).toEqual({
+      policy: true, profile: false, intent: true, engine: false,
+    })
+  })
+})
+
+// ===========================================================================
+// 2. STALENESS ENGINE — getStrategyStaleness (client variant)
+// ===========================================================================
+
+describe('Strategy staleness (client variant)', () => {
   it('returns CURRENT for a strategy with matching policy hash + engine version', () => {
     const currentPolicy = getCurrentPolicySnapshot()
     const freshStrategy: Strategy = {
@@ -34,8 +121,10 @@ describe('Strategy staleness', () => {
         simulationMode: false,
       },
       strategyEngineVersion: STRATEGY_ENGINE_VERSION,
+      mobilityStateVersion: 1,
+      intentVersion: 1,
     }
-    const result = getStrategyStaleness(freshStrategy)
+    const result = getStrategyStaleness(freshStrategy, 1, 1)
     expect(result.status).toBe('CURRENT')
     expect(result.shouldRecalculate).toBe(false)
   })
@@ -52,10 +141,13 @@ describe('Strategy staleness', () => {
         simulationMode: false,
       },
       strategyEngineVersion: STRATEGY_ENGINE_VERSION,
+      mobilityStateVersion: 1,
+      intentVersion: 1,
     }
-    const result = getStrategyStaleness(staleStrategy)
-    expect(result.shouldRecalculate).toBe(true)
-    expect(result.reasons.some((r) => r.includes('policy'))).toBe(true)
+    const result = getStrategyStaleness(staleStrategy, 1, 1)
+    expect(result.status).toBe('STALE_POLICY')
+    expect(result.dimensions.policy).toBe(true)
+    expect(result.dimensions.profile).toBe(false)
   })
 
   it('returns STALE_ENGINE when the engine version differs', () => {
@@ -71,10 +163,54 @@ describe('Strategy staleness', () => {
         simulationMode: false,
       },
       strategyEngineVersion: '0.9.0', // old version
+      mobilityStateVersion: 1,
+      intentVersion: 1,
     }
-    const result = getStrategyStaleness(staleStrategy)
-    expect(result.shouldRecalculate).toBe(true)
-    expect(result.reasons.some((r) => r.includes('engine'))).toBe(true)
+    const result = getStrategyStaleness(staleStrategy, 1, 1)
+    expect(result.status).toBe('STALE_ENGINE')
+    expect(result.dimensions.engine).toBe(true)
+  })
+
+  it('returns STALE_PROFILE when the state version differs', () => {
+    const currentPolicy = getCurrentPolicySnapshot()
+    const staleStrategy: Strategy = {
+      ...strategy,
+      policyContext: {
+        baseSnapshotId: currentPolicy.id,
+        activeOverlayIds: [],
+        runtimeVersionId: currentPolicy.id,
+        runtimeHash: currentPolicy.hash,
+        asOf: '2025-06-01',
+        simulationMode: false,
+      },
+      strategyEngineVersion: STRATEGY_ENGINE_VERSION,
+      mobilityStateVersion: 1,
+      intentVersion: 1,
+    }
+    const result = getStrategyStaleness(staleStrategy, 2, 1) // current state version = 2
+    expect(result.status).toBe('STALE_PROFILE')
+    expect(result.dimensions.profile).toBe(true)
+  })
+
+  it('returns STALE_INTENT when the intent version differs', () => {
+    const currentPolicy = getCurrentPolicySnapshot()
+    const staleStrategy: Strategy = {
+      ...strategy,
+      policyContext: {
+        baseSnapshotId: currentPolicy.id,
+        activeOverlayIds: [],
+        runtimeVersionId: currentPolicy.id,
+        runtimeHash: currentPolicy.hash,
+        asOf: '2025-06-01',
+        simulationMode: false,
+      },
+      strategyEngineVersion: STRATEGY_ENGINE_VERSION,
+      mobilityStateVersion: 1,
+      intentVersion: 1,
+    }
+    const result = getStrategyStaleness(staleStrategy, 1, 3) // current intent version = 3
+    expect(result.status).toBe('STALE_INTENT')
+    expect(result.dimensions.intent).toBe(true)
   })
 
   it('returns STALE_MULTIPLE when both policy and engine differ', () => {
@@ -89,9 +225,11 @@ describe('Strategy staleness', () => {
         simulationMode: false,
       },
       strategyEngineVersion: '0.9.0',
+      mobilityStateVersion: 1,
+      intentVersion: 1,
     }
-    const result = getStrategyStaleness(staleStrategy)
-    expect(result.shouldRecalculate).toBe(true)
+    const result = getStrategyStaleness(staleStrategy, 1, 1)
+    expect(result.status).toBe('STALE_MULTIPLE')
     expect(result.reasons.length).toBe(2)
   })
 
@@ -107,20 +245,23 @@ describe('Strategy staleness', () => {
         simulationMode: false,
       },
       strategyEngineVersion: STRATEGY_ENGINE_VERSION,
+      mobilityStateVersion: 1,
+      intentVersion: 1,
     }
-    const result = getStrategyStaleness(staleStrategy)
+    const result = getStrategyStaleness(staleStrategy, 1, 1)
     expect(result.explanation).toContain('policy')
   })
 })
 
 // ===========================================================================
-// 2. FULL STALENESS (server-side, with state/intent versions)
+// 3. FULL STALENESS (server-side, with state/intent versions)
 // ===========================================================================
 
-describe('Full strategy staleness', () => {
-  it('returns CURRENT when all parameters match', () => {
-    const currentPolicy = getCurrentPolicySnapshot()
-    const freshStrategy: Strategy = {
+describe('Full strategy staleness (server variant — all 4 dimensions)', () => {
+  const currentPolicy = getCurrentPolicySnapshot()
+
+  function makeStrategy(overrides: Partial<Strategy> = {}): Strategy {
+    return {
       ...strategy,
       policyContext: {
         baseSnapshotId: currentPolicy.id,
@@ -131,45 +272,154 @@ describe('Full strategy staleness', () => {
         simulationMode: false,
       },
       strategyEngineVersion: STRATEGY_ENGINE_VERSION,
+      mobilityStateVersion: 1,
+      intentVersion: 1,
+      ...overrides,
     }
+  }
+
+  it('returns CURRENT when all 4 dimensions match', () => {
     const result = getFullStrategyStaleness(
-      freshStrategy,
+      makeStrategy(),
       currentPolicy.hash,
       1, // currentStateVersion
       1, // currentIntentVersion
       STRATEGY_ENGINE_VERSION,
     )
     expect(result.status).toBe('CURRENT')
+    expect(result.dimensions).toEqual({
+      policy: false, profile: false, intent: false, engine: false,
+    })
   })
 
-  it('detects policy change in full check', () => {
-    // The strategy from buildStrategy() without a context has no policyContext,
-    // so the staleness check can't compare hashes. We need to pass a mock context.
-    const strategyWithPolicy: Strategy = {
-      ...strategy,
-      policyContext: {
-        baseSnapshotId: 'snap-2024-11',
-        activeOverlayIds: [],
-        runtimeVersionId: 'snap-2024-11',
-        runtimeHash: 'stored-hash-123',
-        asOf: '2025-06-01',
-        simulationMode: false,
-      },
-      strategyEngineVersion: STRATEGY_ENGINE_VERSION,
-    }
+  it('returns STALE_POLICY when only the policy hash differs', () => {
     const result = getFullStrategyStaleness(
-      strategyWithPolicy,
-      'different-hash',
+      makeStrategy(),
+      'different-policy-hash',
       1,
       1,
       STRATEGY_ENGINE_VERSION,
     )
-    expect(result.shouldRecalculate).toBe(true)
+    expect(result.status).toBe('STALE_POLICY')
+    expect(result.dimensions.policy).toBe(true)
+    expect(result.dimensions.profile).toBe(false)
+  })
+
+  it('returns STALE_PROFILE when only the state version differs', () => {
+    const result = getFullStrategyStaleness(
+      makeStrategy(),
+      currentPolicy.hash,
+      7, // current state version is now 7
+      1,
+      STRATEGY_ENGINE_VERSION,
+    )
+    expect(result.status).toBe('STALE_PROFILE')
+    expect(result.dimensions.profile).toBe(true)
+  })
+
+  it('returns STALE_INTENT when only the intent version differs', () => {
+    const result = getFullStrategyStaleness(
+      makeStrategy(),
+      currentPolicy.hash,
+      1,
+      4, // current intent version is now 4
+      STRATEGY_ENGINE_VERSION,
+    )
+    expect(result.status).toBe('STALE_INTENT')
+    expect(result.dimensions.intent).toBe(true)
+  })
+
+  it('returns STALE_ENGINE when only the engine version differs', () => {
+    const result = getFullStrategyStaleness(
+      makeStrategy(),
+      currentPolicy.hash,
+      1,
+      1,
+      '99.0.0', // engine has moved on
+    )
+    expect(result.status).toBe('STALE_ENGINE')
+    expect(result.dimensions.engine).toBe(true)
+  })
+
+  it('returns STALE_MULTIPLE when policy + profile differ', () => {
+    const result = getFullStrategyStaleness(
+      makeStrategy(),
+      'different-policy-hash',
+      7,
+      1,
+      STRATEGY_ENGINE_VERSION,
+    )
+    expect(result.status).toBe('STALE_MULTIPLE')
+    expect(result.dimensions.policy).toBe(true)
+    expect(result.dimensions.profile).toBe(true)
+    expect(result.dimensions.intent).toBe(false)
+    expect(result.dimensions.engine).toBe(false)
+  })
+
+  it('returns STALE_MULTIPLE when policy + intent differ', () => {
+    const result = getFullStrategyStaleness(
+      makeStrategy(),
+      'different-policy-hash',
+      1,
+      4,
+      STRATEGY_ENGINE_VERSION,
+    )
+    expect(result.status).toBe('STALE_MULTIPLE')
+    expect(result.reasons.length).toBe(2)
+  })
+
+  it('returns STALE_MULTIPLE when profile + intent differ', () => {
+    const result = getFullStrategyStaleness(
+      makeStrategy(),
+      currentPolicy.hash,
+      2,
+      2,
+      STRATEGY_ENGINE_VERSION,
+    )
+    expect(result.status).toBe('STALE_MULTIPLE')
+  })
+
+  it('returns STALE_MULTIPLE when all 4 dimensions differ', () => {
+    const result = getFullStrategyStaleness(
+      makeStrategy(),
+      'different-policy-hash',
+      99,
+      99,
+      '99.0.0',
+    )
+    expect(result.status).toBe('STALE_MULTIPLE')
+    expect(result.reasons.length).toBe(4)
+    expect(result.dimensions).toEqual({
+      policy: true, profile: true, intent: true, engine: true,
+    })
+  })
+
+  it('never infers staleness from timestamps — only exact versions', () => {
+    // An old generatedAt timestamp with matching versions is still CURRENT.
+    const oldStrategy = makeStrategy({
+      generatedAt: '2020-01-01T00:00:00Z',
+      policyContext: {
+        baseSnapshotId: currentPolicy.id,
+        activeOverlayIds: [],
+        runtimeVersionId: currentPolicy.id,
+        runtimeHash: currentPolicy.hash,
+        asOf: '2025-06-01',
+        simulationMode: false,
+      },
+    })
+    const result = getFullStrategyStaleness(
+      oldStrategy,
+      currentPolicy.hash,
+      1,
+      1,
+      STRATEGY_ENGINE_VERSION,
+    )
+    expect(result.status).toBe('CURRENT')
   })
 })
 
 // ===========================================================================
-// 3. STRATEGY REPRODUCIBILITY
+// 4. STRATEGY REPRODUCIBILITY
 // ===========================================================================
 
 describe('Strategy reproducibility', () => {
@@ -184,10 +434,30 @@ describe('Strategy reproducibility', () => {
     expect(strategy.strategyEngineVersion).toBeDefined()
     expect(strategy.strategyEngineVersion).toBe(STRATEGY_ENGINE_VERSION)
   })
+
+  it('StrategyProvenance type is constructable from all required fields', () => {
+    const provenance = {
+      strategyEngineVersion: STRATEGY_ENGINE_VERSION,
+      runtimePolicyVersion: 'snap-2024-11',
+      runtimePolicyHash: 'abc123',
+      asOfDate: '2025-06-01',
+      mobilityStateSnapshotId: 'snap-1',
+      mobilityStateVersion: 1,
+      intentRecordId: 'intent-1',
+      intentVersion: 1,
+      objectiveId: 'residence',
+      objectiveVersion: 1,
+      generatedAt: '2025-06-01T00:00:00Z',
+    }
+    expect(provenance.strategyEngineVersion).toBe(STRATEGY_ENGINE_VERSION)
+    expect(provenance.mobilityStateVersion).toBe(1)
+    expect(provenance.intentVersion).toBe(1)
+    expect(provenance.objectiveId).toBe('residence')
+  })
 })
 
 // ===========================================================================
-// 4. PROFILE STATE VERSIONING
+// 5. PROFILE STATE VERSIONING
 // ===========================================================================
 
 describe('Profile state versioning', () => {
@@ -211,10 +481,26 @@ describe('Profile state versioning', () => {
     expect(modified.credentialRecognizedIn.value).toContain('DE')
     expect(before).not.toContain('DE')
   })
+
+  it('preserves USER_CONFIRMED provenance on user-edited fields', () => {
+    const modified: MobilityState = JSON.parse(JSON.stringify(state))
+    const before = modified.annualIncomeUSD.provenance
+    modified.annualIncomeUSD = {
+      ...modified.annualIncomeUSD,
+      value: 95000,
+      status: 'confirmed_by_user',
+      provenance: 'user_edit',
+    }
+    expect(modified.annualIncomeUSD.value).toBe(95000)
+    expect(modified.annualIncomeUSD.status).toBe('confirmed_by_user')
+    // Provenance is now 'user_edit' (was whatever it was before)
+    expect(modified.annualIncomeUSD.provenance).toBe('user_edit')
+    expect(before).not.toBe('user_edit')
+  })
 })
 
 // ===========================================================================
-// 5. OBJECTIVE ISOLATION
+// 6. OBJECTIVE ISOLATION
 // ===========================================================================
 
 describe('Objective isolation', () => {

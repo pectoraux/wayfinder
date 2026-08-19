@@ -1,7 +1,7 @@
-// Wayfinder — Prisma schema (PostgreSQL / Neon)
+// Wayfinder — Prisma schema (SQLite, LOCAL DEV ONLY)
 //
-// This is the PRODUCTION schema. The datasource is PostgreSQL (Neon).
-// Local development uses a separate SQLite schema at prisma/schema.local.prisma
+// This is the LOCAL DEVELOPMENT schema. It mirrors prisma/schema.prisma but uses
+// SQLite so local dev/tests work without a PostgreSQL instance.
 // (via the --schema flag) when no PostgreSQL instance is available. The field
 // definitions are identical between the two; only the provider differs.
 //
@@ -16,9 +16,8 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")        // Neon pooled connection (runtime)
-  directUrl = env("DIRECT_DATABASE_URL") // Neon direct connection (migrations)
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
 }
 
 // ---------------------------------------------------------------------------

@@ -283,7 +283,14 @@ export function applyOverlays(
 
 /** Deterministic hash of the RESOLVED runtime policy (not just ids — the
  *  actual resolved entity state). If the resolved policy differs, the hash
- *  differs. If identical, the hash is identical. */
+ *  differs. If identical, the hash is identical.
+ *
+ *  STABILITY: the asOf is normalized to date granularity (YYYY-MM-DD) in the
+ *  hash payload. Two resolutions on the same day produce the same hash (same
+ *  snapshot selected, same entities resolved). Two resolutions on different
+ *  days may produce different hashes (different snapshot selected). This
+ *  makes the hash stable for staleness comparisons — a strategy computed at
+ *  10:00 and re-resolved at 15:00 on the same day will match. */
 export function runtimePolicyHash(
   baseSnapshotId: string,
   overlayIds: string[],
@@ -292,13 +299,18 @@ export function runtimePolicyHash(
   resolvedPrograms?: ImmigrationProgram[],
   resolvedTransitions?: NormalizedTransition[],
 ): string {
+  // Normalize asOf to date granularity so the hash is stable across same-day
+  // resolutions. The full timestamp is still used for snapshot selection (in
+  // resolveRuntimePolicy), but the hash only cares about the date.
+  const asOfDate = asOf.split('T')[0]
+
   // If resolved entities are provided, hash the full resolved state.
   // Otherwise (legacy callers), hash just the ids.
   if (resolvedRequirements && resolvedPrograms && resolvedTransitions) {
     const payload = JSON.stringify({
       base: baseSnapshotId,
       overlays: overlayIds.sort(),
-      asOf,
+      asOf: asOfDate,
       // Canonicalize the resolved entities: sort by id, include only fields
       // that affect policy evaluation.
       requirements: resolvedRequirements
@@ -317,7 +329,7 @@ export function runtimePolicyHash(
   const payload = JSON.stringify({
     base: baseSnapshotId,
     overlays: overlayIds.sort(),
-    asOf,
+    asOf: asOfDate,
   })
   return createHash('sha256').update(payload).digest('hex').slice(0, 16)
 }

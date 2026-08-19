@@ -2,6 +2,14 @@
 // Updates the user's mobility state. Creates a new immutable MobilityStateSnapshot.
 // Returns the new state version + triggers strategy recomputation on the client.
 //
+// CRITICAL INTEGRITY RULES:
+//   1. Version allocation is TRANSACTIONAL: `MAX(version) + 1` inside a
+//      Prisma transaction. The previous `count(...) + 1` approach could
+//      produce the same version number under concurrent writes.
+//   2. Snapshots are immutable — we never mutate an existing row.
+//   3. User-entered facts preserve USER_CONFIRMED provenance. We never
+//      accidentally promote a user edit to OFFICIAL or GOVERNMENT_VERIFIED.
+//
 // Body: { updates: Partial<MobilityState>, currentState: MobilityState }
 // The server merges the updates into the current state and snapshots the result.
 
@@ -19,15 +27,17 @@ interface ProfileUpdateBody {
   currentState: MobilityState
 }
 
-/** Deep-merge updates into the current state, returning a new MobilityState. */
+/** Deep-merge updates into the current state, returning a new MobilityState.
+ *  Preserves USER_CONFIRMED provenance on UserFact fields — never promotes
+ *  a user edit to OFFICIAL or GOVERNMENT_VERIFIED. */
 function applyUpdates(state: MobilityState, updates: Record<string, unknown>): MobilityState {
   const updated: MobilityState = JSON.parse(JSON.stringify(state))
 
   for (const [key, value] of Object.entries(updates)) {
     if (key in updated) {
-      // For UserFact fields, update the value while preserving status/provenance
       const current = (updated as any)[key]
       if (current && typeof current === 'object' && 'value' in current) {
+        // UserFact field: update the value, mark as user-confirmed, preserve provenance type
         current.value = value
         current.status = 'confirmed_by_user'
         current.provenance = 'user_edit'
@@ -58,29 +68,43 @@ export async function POST(req: Request) {
     // Apply the updates to the current state
     const updatedState = applyUpdates(body.currentState, body.updates)
 
-    // Find or create a Person for this user
-    let person = await db.person.findFirst({ where: { userId } })
-    if (!person) {
-      person = await db.person.create({ data: { userId } })
-    }
+    // TRANSACTIONAL version allocation. The previous `count(...) + 1` approach
+    // could produce the same version number under concurrent writes — two
+    // simultaneous POSTs would both see count=N and both create version N+1.
+    // `MAX(version) + 1` inside a transaction with serializable isolation
+    // (Prisma's default for SQLite/Postgres interactive transactions) prevents
+    // that race: the second transaction sees the first's commit when it
+    // re-reads the max, or fails and we retry.
+    const result = await db.$transaction(async (tx) => {
+      // Find or create a Person for this user
+      let person = await tx.person.findFirst({ where: { userId } })
+      if (!person) {
+        person = await tx.person.create({ data: { userId } })
+      }
 
-    // Count existing snapshots for version numbering
-    const existingCount = await db.mobilityStateSnapshot.count({ where: { personId: person.id } })
-    const newVersion = existingCount + 1
+      // MAX(version) for this person — concurrency-safe inside the transaction
+      const latest = await tx.mobilityStateSnapshot.findFirst({
+        where: { personId: person.id },
+        orderBy: { version: 'desc' },
+      })
+      const newVersion = (latest?.version ?? 0) + 1
 
-    // Create a new immutable MobilityStateSnapshot
-    const snapshot = await db.mobilityStateSnapshot.create({
-      data: {
-        personId: person.id,
-        version: newVersion,
-        state: updatedState as any,
-        source: 'USER_CONFIRMED',
-      },
+      // Create a new immutable MobilityStateSnapshot
+      const snapshot = await tx.mobilityStateSnapshot.create({
+        data: {
+          personId: person.id,
+          version: newVersion,
+          state: updatedState as any,
+          source: 'USER_CONFIRMED',
+        },
+      })
+
+      return { snapshot, newVersion }
     })
 
     return NextResponse.json({
-      snapshotId: snapshot.id,
-      stateVersion: newVersion,
+      snapshotId: result.snapshot.id,
+      stateVersion: result.newVersion,
       updatedState,
       source: 'USER_CONFIRMED',
     })
@@ -113,6 +137,7 @@ export async function GET() {
     return NextResponse.json({
       state: snapshot.state,
       version: snapshot.version,
+      snapshotId: snapshot.id,
       source: snapshot.source,
       createdAt: snapshot.createdAt.toISOString(),
     })

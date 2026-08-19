@@ -36,11 +36,11 @@ function LoginForm() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [loading, setLoading] = useState(false)
-  const [demoLoading, setDemoLoading] = useState<string | null>(null)
+  const [demoLoading, setDemoLoading] = useState<string | true | null>(null)
 
   const handleSignIn = async (e: React.FormEvent, creds: { email: string; password: string }, demoKey?: string) => {
     e.preventDefault()
-    const setter = demoKey ? setDemoLoading : setLoading
+    const setter = (demoKey ? setDemoLoading : setLoading) as (v: boolean | string | null) => void
     setter(true)
     const res = await signIn("credentials", {
       email: creds.email,
