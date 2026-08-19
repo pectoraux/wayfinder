@@ -36,6 +36,10 @@ interface WayfinderState {
   runCounterfactual: (spec: ScenarioSpec) => Promise<void>
   setActiveRoute: (id: string) => void
   setAsOfDate: (d: string | null) => void
+  answerPreference: (questionId: string, answer: string) => Promise<void>
+  syncActions: () => Promise<void>
+  updateActionStatus: (actionId: string, status: string, stateChange?: { field: string; newValue: unknown; updatedState: MobilityState }) => Promise<void>
+  recomputeStrategy: () => Promise<void>
   reset: () => void
 }
 
@@ -129,6 +133,8 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
         .then((d) => {
           if (d?.strategy) {
             set({ strategy: d.strategy as Strategy, strategyLoading: false })
+            // Sync actions to the DB (non-blocking)
+            get().syncActions()
           } else {
             set({ strategyLoading: false, strategyError: true })
           }
@@ -162,6 +168,97 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
   setActiveRoute: (id) => set({ activeRouteId: id }),
 
   setAsOfDate: (d) => set({ asOfDate: d }),
+
+  answerPreference: async (questionId, answer) => {
+    const { mobilityState, intent, asOfDate } = get()
+    if (!mobilityState || !intent) return
+    set({ strategyLoading: true, strategyError: false })
+    try {
+      const res = await fetch('/api/strategy/preferences', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          questionId, answer,
+          currentIntent: intent,
+          state: mobilityState,
+          asOfDate: asOfDate ?? undefined,
+        }),
+      })
+      if (!res.ok) throw new Error('Preference update failed')
+      const data = await res.json()
+      // Update intent + strategy in the store
+      set({
+        intent: data.updatedIntent,
+        strategy: data.strategy,
+        strategyLoading: false,
+      })
+    } catch {
+      set({ strategyLoading: false, strategyError: true })
+    }
+  },
+
+  syncActions: async () => {
+    const { strategy } = get()
+    if (!strategy?.actionPlan) return
+    try {
+      await fetch('/api/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          actionPlan: strategy.actionPlan,
+          strategyEngineVersion: strategy.strategyEngineVersion,
+          runtimePolicyHash: strategy.policyContext?.runtimeHash,
+        }),
+      })
+    } catch { /* non-blocking */ }
+  },
+
+  updateActionStatus: async (actionId, status, stateChange) => {
+    try {
+      const res = await fetch(`/api/actions/${actionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status,
+          stateChange: stateChange ? {
+            field: stateChange.field,
+            oldValue: null,
+            newValue: stateChange.newValue,
+            updatedState: stateChange.updatedState,
+          } : undefined,
+        }),
+      })
+      if (!res.ok) return
+      const data = await res.json()
+      // If the action changed the user's state, recompute strategy
+      if (data.stateChanged && stateChange?.updatedState) {
+        set({ mobilityState: stateChange.updatedState })
+        await get().recomputeStrategy()
+      }
+    } catch (e) {
+      console.error('updateActionStatus', e)
+    }
+  },
+
+  recomputeStrategy: async () => {
+    const { mobilityState, intent, asOfDate } = get()
+    if (!mobilityState || !intent) return
+    set({ strategyLoading: true, strategyError: false })
+    try {
+      const res = await fetch('/api/strategy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: mobilityState, intent, asOfDate: asOfDate ?? undefined }),
+      })
+      if (!res.ok) throw new Error('Strategy recompute failed')
+      const data = await res.json()
+      set({ strategy: data.strategy, strategyLoading: false })
+      // Sync actions from the new strategy
+      await get().syncActions()
+    } catch {
+      set({ strategyLoading: false, strategyError: true })
+    }
+  },
 
   reset: () =>
     set({

@@ -426,3 +426,41 @@ model PolicyEvent {
   @@index([entityId])
   @@index([provenance])
 }
+
+/// A user's persisted preference answer. Each answer creates a new intent
+/// version and can trigger strategy recomputation.
+model UserPreference {
+  id            String   @id @default(cuid())
+  userId        String
+  questionId    String
+  answer        String
+  source        String   @default("user_answer")
+  confidence    Float    @default(1.0)
+  intentVersion Int
+  createdAt     DateTime @default(now())
+
+  @@unique([userId, questionId, intentVersion])
+  @@index([userId])
+}
+
+/// A user's execution state for a strategy action. Separate from the
+/// deterministic Action template — tracks what the user has actually done.
+model UserAction {
+  id            String   @id @default(cuid())
+  userId        String
+  actionId      String
+  title         String
+  description   String
+  status        String   @default("NOT_STARTED")
+  startedAt     DateTime?
+  completedAt   DateTime?
+  blockedReason String?
+  strategyEngineVersion String?
+  runtimePolicyHash String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([userId, actionId])
+  @@index([userId])
+  @@index([status])
+}
