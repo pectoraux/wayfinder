@@ -20,6 +20,7 @@ interface PlanRequestBody {
   intent: Intent
   scenarios?: ScenarioSpec[]
   generateNarrative?: boolean
+  asOfDate?: string // ISO date — when provided, evaluates against the policy snapshot active on that date
 }
 
 export async function POST(req: Request) {
@@ -30,7 +31,7 @@ export async function POST(req: Request) {
     }
 
     const scenarios = body.scenarios ?? defaultScenarios(body.state)
-    let plan = buildPlan(body.state, body.intent, scenarios)
+    let plan = buildPlan(body.state, body.intent, scenarios, body.asOfDate)
     plan = withEnablers(plan)
 
     const wantNarrative = body.generateNarrative !== false

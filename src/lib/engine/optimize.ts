@@ -17,6 +17,7 @@ import type {
   ScenarioResult,
 } from '@/lib/domain/types'
 import { POLICY_VERSION } from '@/lib/knowledge/policy-version'
+import { getPolicySnapshot } from '@/lib/policy/snapshot'
 import { computeFrontier } from './frontier'
 import { compositeUtility, generateRoutes } from './routes'
 import { runScenario, type ScenarioSpec } from './simulate'
@@ -230,14 +231,15 @@ export function buildPlan(
   state: MobilityState,
   intent: Intent,
   scenarios: ScenarioSpec[] = [],
+  asOfDate?: string | Date,
 ): MobilityPlan {
-  const routes = generateRoutes(state, intent)
+  const routes = generateRoutes(state, intent, asOfDate)
   const frontier = computeFrontier(routes, intent)
   const ranked = rankRoutes(routes, intent)
   const alternativeIntents = discoverAlternativeIntents(state, intent, routes)
   const recommendation = buildRecommendation(state, intent, ranked, alternativeIntents)
 
-  const scenarioResults: ScenarioResult[] = scenarios.map((spec) => runScenario(state, intent, spec))
+  const scenarioResults: ScenarioResult[] = scenarios.map((spec) => runScenario(state, intent, spec, asOfDate))
 
   const evidenceIds = Array.from(new Set(routes.flatMap((r) => r.evidenceIds)))
 
@@ -245,11 +247,16 @@ export function buildPlan(
   if (routes.every((r) => r.eligibility.status === 'ineligible')) confidence = 'low'
   else if (ranked[0]?.eligibility.status === 'eligible') confidence = 'high'
 
+  // Resolve the policy snapshot used, for reproducibility
+  const effectiveAsOf = asOfDate ?? new Date().toISOString()
+  const snapshot = getPolicySnapshot('global', effectiveAsOf)
+
   return {
     generatedAt: new Date().toISOString(),
-    asOfDate: new Date().toISOString(),
-    policyVersion: POLICY_VERSION.version,
-    policyHash: POLICY_VERSION.hash,
+    asOfDate: effectiveAsOf,
+    policyVersion: snapshot.version,
+    policyHash: snapshot.hash,
+    policySnapshotId: snapshot.id,
     state,
     intent,
     routes: ranked,

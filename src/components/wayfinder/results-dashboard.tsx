@@ -7,6 +7,8 @@ import { RouteDetail } from '@/components/wayfinder/route-detail'
 import { MobilityFrontierChart } from '@/components/wayfinder/mobility-frontier'
 import { CounterfactualPanel } from '@/components/wayfinder/counterfactual-panel'
 import { EnablerList } from '@/components/wayfinder/enabler-list'
+import { ChangeSignal } from '@/components/wayfinder/policy/change-signal'
+import { HistoricalModePicker } from '@/components/wayfinder/policy/historical-mode-picker'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -100,9 +102,18 @@ export function ResultsDashboard() {
                 <Badge variant="outline" className="text-[10px] font-normal">
                   confidence: {plan.confidence}
                 </Badge>
+                {plan.policySnapshotId && (
+                  <Badge variant="outline" className="text-[10px] font-normal">
+                    snapshot: {plan.policySnapshotId.replace('snap-', '')}
+                  </Badge>
+                )}
+                <HistoricalModePicker />
               </div>
             </div>
           </div>
+
+          {/* Change signal: flags if the best route is invalidated by a newer snapshot */}
+          <ChangeSignal route={bestRoute} plan={plan} latestSnapshotId="snap-2026-01" />
 
           <div className="grid gap-px bg-border/40 sm:grid-cols-2 lg:grid-cols-4">
             <RecCell icon={Sparkles} label="Why this ranks first" tone="primary">
@@ -261,6 +272,9 @@ export function ResultsDashboard() {
             <div className="space-y-2">
               <LedgerRow label="Policy version" value={plan.policyVersion} icon={ShieldCheck} />
               <LedgerRow label="Policy hash" value={plan.policyHash} mono />
+              {plan.policySnapshotId && (
+                <LedgerRow label="Policy snapshot" value={plan.policySnapshotId} mono />
+              )}
               <LedgerRow label="As-of date" value={new Date(plan.asOfDate).toLocaleString()} />
               <LedgerRow label="Engine" value="deterministic (policy-as-code)" icon={Scale} />
               <LedgerRow label="Routes evaluated" value={String(plan.routes.length)} />

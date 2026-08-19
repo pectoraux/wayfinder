@@ -21,6 +21,7 @@ interface WayfinderState {
   scenarios: ScenarioResult[]
   error: string | null
   isComputing: boolean
+  asOfDate: string | null // ISO date for historical mode; null = today
 
   setPhase: (p: Phase) => void
   setRawIntent: (s: string) => void
@@ -30,6 +31,7 @@ interface WayfinderState {
   computePlan: () => Promise<void>
   runCounterfactual: (spec: ScenarioSpec) => Promise<void>
   setActiveRoute: (id: string) => void
+  setAsOfDate: (d: string | null) => void
   reset: () => void
 }
 
@@ -46,6 +48,7 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
   scenarios: [],
   error: null,
   isComputing: false,
+  asOfDate: null,
 
   setPhase: (p) => set({ phase: p }),
   setRawIntent: (s) => set({ rawIntent: s }),
@@ -93,7 +96,7 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
       const res = await fetch('/api/mobility/plan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state: mobilityState, intent }),
+        body: JSON.stringify({ state: mobilityState, intent, asOfDate: get().asOfDate ?? undefined }),
       })
       if (!res.ok) throw new Error('Plan computation failed')
       const data = await res.json()
@@ -134,6 +137,8 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
 
   setActiveRoute: (id) => set({ activeRouteId: id }),
 
+  setAsOfDate: (d) => set({ asOfDate: d }),
+
   reset: () =>
     set({
       phase: 'home',
@@ -148,5 +153,6 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
       scenarios: [],
       error: null,
       isComputing: false,
+      asOfDate: null,
     }),
 }))

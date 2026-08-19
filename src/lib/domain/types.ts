@@ -604,6 +604,8 @@ export interface MobilityPlan {
   asOfDate: string
   policyVersion: string
   policyHash: string
+  /** The normalized policy snapshot this plan was computed against. */
+  policySnapshotId?: string
   state: MobilityState
   intent: Intent
   routes: Route[]

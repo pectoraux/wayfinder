@@ -67,3 +67,30 @@ Stage Summary:
 - LLM: env-var driven; deterministic fallbacks ensure identical app behavior even if the Z.ai internal API is unreachable from Vercel.
 - All secrets in Vercel project env vars (encrypted); .env excluded from GitHub.
 - Note: the user's PAT and Vercel token should be rotated now (they stated they would).
+
+---
+Task ID: 13-15
+Agent: main (founding CTO)
+Task: Build the Temporal Mobility Intelligence Layer — versioned, evidence-backed policy representation with snapshots, diffs, route invalidation, impact analysis, historical mode, and tests.
+
+Work Log:
+- Inspected the full codebase: existing Pathway model has effectiveFrom strings but no real temporal model; PolicyVersion is a single global object; route engine iterates static PATHWAYS with no asOfDate.
+- DATABASE DECISION (§22): HYBRID architecture. Normalized knowledge model (Jurisdiction, ImmigrationProgram, ImmigrationStatus, NormalizedRequirement, NormalizedTransition, PolicySnapshot, Source, SourceSnapshot) stays in versioned TypeScript. User-scoped data (DecisionRecord, Person) stays in PostgreSQL. Added PolicySource + SourceSnapshot tables to Prisma for future change-detection persistence.
+- New normalized domain model (src/lib/policy/types.ts): Jurisdiction, ImmigrationProgram, ImmigrationStatus, NormalizedRequirement (with VerificationState: AI_EXTRACTED → PENDING_VERIFICATION → HUMAN_REVIEWED → OFFICIAL_CONFIRMED), NormalizedTransition, PolicySnapshot, Source, SourceSnapshot, PolicyChange, PolicyDiff, RouteInvalidation, PolicyImpact.
+- Normalized knowledge base (src/lib/policy/knowledge.ts): 8 jurisdictions, 15 immigration statuses, 9 v1 programs + 3 v2 changed programs (DE Blue Card threshold raised, PT D7 income raised, CA SUV suspended), 28 requirements (with supersession chains), 16 transitions, 2 policy snapshots (snap-2024-11 current + snap-2026-01 hypothetical).
+- Policy snapshot API (src/lib/policy/snapshot.ts): getPolicySnapshot(jurisdiction, asOf), getCurrentPolicySnapshot, comparePolicySnapshots(a, b) → structured PolicyDiff with THRESHOLD_CHANGED, PROGRAM_SUSPENDED, REQUIREMENT_ADDED/REMOVED, TRANSITION_ADDED/REMOVED, EFFECTIVE_DATE_CHANGED, etc.
+- MobilityGraph abstraction (src/lib/graph/mobility-graph.ts): buildGraph, getNeighbors, findPaths (BFS), getReachableStatuses, getRequirements, isRouteStillValid, getRouteInvalidationReasons, getAffectedRoutes, getAffectedTransitions, getPolicyImpact. Storage layer is swappable.
+- Extraction pipeline (src/lib/policy/extraction.ts): extractCandidateRequirements (LLM-backed, returns AI_EXTRACTED candidates), verification state machine (canTransition, promoteCandidate), publishCandidate (throws if not OFFICIAL_CONFIRMED — the single chokepoint preventing AI-extracted rules from becoming policy), onlyAuthoritative filter.
+- Source registry + change detection (src/lib/policy/sources.ts): SOURCES derived from EVIDENCE records, contentHash (SHA-256 normalized), detectSourceChange, classifyChange (TEXT_CHANGED vs POSSIBLE_POLICY_CHANGE).
+- Migration adapter (src/lib/policy/normalize.ts): pathwayToProgram, getNormalizedRequirementsForPathway, getNormalizedTransitionsForPathway — bridges legacy Pathway (used by the existing route engine) to the normalized model without rewriting the working engine.
+- Route engine threading (src/lib/engine/routes.ts): generateRoutes now accepts asOfDate, resolves the active policy snapshot, and swaps in superseded requirements (e.g. the 2026 Blue Card threshold when asOfDate >= 2026-01-01). buildPlan and runScenario thread asOfDate through. MobilityPlan now carries policySnapshotId.
+- API routes: /api/policy/snapshot (GET, with ?asOf or ?id), /api/policy/diff (GET, ?from&to), /api/policy/affected (GET, impact analysis with DB-backed decision records), /api/route/validate (POST, isRouteStillValid).
+- UI: PolicyTransparencyCard (per-requirement evidence with effective dates, verification status, policy version, expandable excerpts, AI_EXTRACTED warning), ChangeSignal (flags invalidated routes with alternatives), HistoricalModePicker (as-of date picker that recomputes the plan), /policy explorer page (snapshots tab, diff tab with structured changes, about tab).
+- Tests (tests/policy.test.ts, 45 tests, all passing): temporal policy selection, supersession, eligibility across versions (same user → different threshold under v1 vs v2), route invalidation (CA SUV suspended, DE Blue Card threshold raised), policy diff (threshold + suspension + income changes detected, every change has evidence), historical reproducibility (plan records snapshot id+hash, deterministic recompute, historical plan doesn't silently recompute), evidence linkage (every published requirement has evidence, every evidence id resolves), AI extraction boundaries (AI_EXTRACTED not authoritative, state machine rejects illegal transitions, publishCandidate throws), MobilityGraph operations, source change detection, impact analysis.
+- Verification: lint clean, 45/45 tests pass, main flow intact (demo user → full plan renders), historical mode works (as-of 2025-06-01 → snapshot 2024-11; as-of 2026-06-01 → snapshot 2026-01), change signal appears when plan is under v1 but v2 is latest, policy explorer page renders snapshots + diff + about tabs.
+
+Stage Summary:
+- The legal-policy foundation is now worthy of the strategy engine: versioned snapshots, evidence-backed requirements, deterministic diff engine, route invalidation, impact analysis, historical reproducibility, and AI extraction boundaries enforced by a state machine.
+- 9 real pathways refactored into the normalized model; 2 policy snapshots coexist for diff/invalidation demos.
+- The existing product flow is preserved — the route engine still works identically when asOfDate is omitted.
+- snap-2026-01 is clearly labelled HYPOTHETICAL for demonstrating the temporal APIs; it is NOT presented as current law.

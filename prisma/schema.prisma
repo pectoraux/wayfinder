@@ -160,3 +160,43 @@ model ConsentRecord {
 
   @@index([personId])
 }
+
+// ---------------------------------------------------------------------------
+// POLICY INTELLIGENCE — sources, snapshots, change detection
+// ---------------------------------------------------------------------------
+
+/// An authoritative source of immigration information (government page,
+/// legislation, embassy, etc.). The knowledge base references Sources via
+/// Evidence records.
+model PolicySource {
+  id            String   @id @default(cuid())
+  jurisdictionId String
+  sourceType    String   // GOVERNMENT_PAGE | LEGISLATION | REGULATION | ...
+  authority     String
+  url           String   @unique
+  retrievalMethod String  @default("manual")
+  trustLevel    String   @default("official")
+  lastChecked   DateTime?
+  evidenceIds   String   @default("[]") // JSON array of evidence ids
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  snapshots     SourceSnapshot[]
+
+  @@index([jurisdictionId])
+}
+
+/// A snapshot of a source's content at a point in time. Enables change
+/// detection (content-hash diff) without depending on the live webpage.
+model SourceSnapshot {
+  id            String   @id @default(cuid())
+  sourceId      String
+  source        PolicySource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  retrievedAt   DateTime @default(now())
+  contentHash   String   // SHA-256 of retrieved/normalized content
+  contentLocation String // object storage path or inline ref
+  changeType    String?  // TEXT_CHANGED | POSSIBLE_POLICY_CHANGE | VERIFIED_POLICY_CHANGE | UNCHANGED
+  diffSummary   String?
+
+  @@index([sourceId])
+}

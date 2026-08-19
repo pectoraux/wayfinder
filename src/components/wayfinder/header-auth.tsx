@@ -4,7 +4,7 @@ import { useSession, signOut } from "next-auth/react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { LogOut, Shield, User as UserIcon } from "lucide-react"
+import { LogOut, Shield, User as UserIcon, GitBranch } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 export function HeaderAuth() {
@@ -26,6 +26,9 @@ export function HeaderAuth() {
   return (
     <div className="flex items-center gap-2">
       <div className="hidden items-center gap-1.5 sm:flex">
+        <Button variant="ghost" size="sm" onClick={() => router.push("/policy")} className="h-7 gap-1.5 text-xs">
+          <GitBranch className="h-3 w-3" /> Policy
+        </Button>
         {isAdmin && (
           <Button variant="ghost" size="sm" onClick={() => router.push("/admin")} className="h-7 gap-1.5 text-xs">
             <Shield className="h-3 w-3" /> Admin
