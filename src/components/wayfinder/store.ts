@@ -1,7 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
-import type { Intent, MobilityPlan, MobilityState, Evidence } from '@/lib/domain/types'
+import type { Intent, MobilityPlan, MobilityState, Evidence, Preference } from '@/lib/domain/types'
 import { exampleState } from '@/lib/domain/state'
 import type { PlanNarrative } from '@/lib/ai/explanation'
 import type { ScenarioResult, ScenarioSpec } from '@/lib/engine/simulate'
@@ -26,6 +26,9 @@ interface WayfinderState {
   strategyLoading: boolean
   strategyError: boolean
   asOfDate: string | null // ISO date for historical mode; null = today
+  activeObjective: string | null // the objective the user has adopted
+  exploredObjective: string | null // an objective being previewed (not yet adopted)
+  exploredStrategy: Strategy | null // the strategy computed for the explored objective
 
   setPhase: (p: Phase) => void
   setRawIntent: (s: string) => void
@@ -40,6 +43,9 @@ interface WayfinderState {
   syncActions: () => Promise<void>
   updateActionStatus: (actionId: string, status: string, stateChange?: { field: string; newValue: unknown; updatedState: MobilityState }) => Promise<void>
   recomputeStrategy: () => Promise<void>
+  exploreObjective: (objective: string) => Promise<void>
+  adoptStrategy: (objective: string) => Promise<void>
+  clearExplored: () => void
   reset: () => void
 }
 
@@ -60,6 +66,9 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
   strategyLoading: false,
   strategyError: false,
   asOfDate: null,
+  activeObjective: null,
+  exploredObjective: null,
+  exploredStrategy: null,
 
   setPhase: (p) => set({ phase: p }),
   setRawIntent: (s) => set({ rawIntent: s }),
@@ -260,6 +269,81 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
     }
   },
 
+  exploreObjective: async (objective) => {
+    const { mobilityState, intent, asOfDate, strategy } = get()
+    if (!mobilityState || !intent) return
+
+    // If the explored objective matches the current active objective, just clear
+    if (strategy && get().activeObjective === objective) {
+      set({ exploredObjective: null, exploredStrategy: null })
+      return
+    }
+
+    // Find the objective's priorities from the strategy's intent frontier
+    const frontierPoint = strategy?.intentFrontier?.points?.find((p) => p.objective === objective)
+    if (!frontierPoint) return
+
+    // Build an intent with the explored objective's priorities
+    const OBJECTIVE_PRIORITIES: Record<string, Preference[]> = {
+      income: [{ kind: 'income_priority', weight: 0.5 }, { kind: 'mobility_priority', weight: 0.2 }, { kind: 'safety_priority', weight: 0.1 }],
+      residence: [{ kind: 'safety_priority', weight: 0.3 }, { kind: 'citizenship_priority', weight: 0.2 }, { kind: 'family_stability', weight: 0.2 }],
+      citizenship: [{ kind: 'citizenship_priority', weight: 0.5 }, { kind: 'mobility_priority', weight: 0.2 }],
+      entrepreneurship: [{ kind: 'entrepreneurship', weight: 0.4 }, { kind: 'mobility_priority', weight: 0.2 }, { kind: 'income_priority', weight: 0.15 }],
+      mobility: [{ kind: 'mobility_priority', weight: 0.4 }, { kind: 'citizenship_priority', weight: 0.25 }],
+      cost: [{ kind: 'income_priority', weight: 0.1 }, { kind: 'safety_priority', weight: 0.15 }],
+    }
+    const exploredPriorities = OBJECTIVE_PRIORITIES[objective] ?? intent.priorities
+    const exploredIntent: Intent = { ...intent, priorities: exploredPriorities }
+
+    set({ exploredObjective: objective, strategyLoading: true })
+    try {
+      const res = await fetch('/api/strategy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: mobilityState, intent: exploredIntent, asOfDate: asOfDate ?? undefined }),
+      })
+      if (!res.ok) throw new Error('Explore failed')
+      const data = await res.json()
+      set({ exploredStrategy: data.strategy, strategyLoading: false })
+    } catch {
+      set({ strategyLoading: false, exploredObjective: null, exploredStrategy: null })
+    }
+  },
+
+  adoptStrategy: async (objective) => {
+    const { mobilityState, intent, asOfDate, exploredStrategy } = get()
+    if (!mobilityState || !intent) return
+
+    // Build the adopted intent with the new objective's priorities
+    const OBJECTIVE_PRIORITIES: Record<string, Preference[]> = {
+      income: [{ kind: 'income_priority', weight: 0.5 }, { kind: 'mobility_priority', weight: 0.2 }, { kind: 'safety_priority', weight: 0.1 }],
+      residence: [{ kind: 'safety_priority', weight: 0.3 }, { kind: 'citizenship_priority', weight: 0.2 }, { kind: 'family_stability', weight: 0.2 }],
+      citizenship: [{ kind: 'citizenship_priority', weight: 0.5 }, { kind: 'mobility_priority', weight: 0.2 }],
+      entrepreneurship: [{ kind: 'entrepreneurship', weight: 0.4 }, { kind: 'mobility_priority', weight: 0.2 }, { kind: 'income_priority', weight: 0.15 }],
+      mobility: [{ kind: 'mobility_priority', weight: 0.4 }, { kind: 'citizenship_priority', weight: 0.25 }],
+      cost: [{ kind: 'income_priority', weight: 0.1 }, { kind: 'safety_priority', weight: 0.15 }],
+    }
+    const adoptedPriorities = OBJECTIVE_PRIORITIES[objective] ?? intent.priorities
+    const adoptedIntent: Intent = { ...intent, priorities: adoptedPriorities }
+
+    // If we have an explored strategy, use it; otherwise recompute
+    if (exploredStrategy) {
+      set({
+        strategy: exploredStrategy,
+        intent: adoptedIntent,
+        activeObjective: objective,
+        exploredObjective: null,
+        exploredStrategy: null,
+      })
+      await get().syncActions()
+    } else {
+      set({ intent: adoptedIntent, activeObjective: objective })
+      await get().recomputeStrategy()
+    }
+  },
+
+  clearExplored: () => set({ exploredObjective: null, exploredStrategy: null }),
+
   reset: () =>
     set({
       phase: 'home',
@@ -278,5 +362,8 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
       strategyLoading: false,
       strategyError: false,
       asOfDate: null,
+      activeObjective: null,
+      exploredObjective: null,
+      exploredStrategy: null,
     }),
 }))
