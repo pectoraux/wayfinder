@@ -41,3 +41,29 @@ Stage Summary:
 - Working production-quality prototype proving the architecture: evidence → structured facts → policy evaluation → route optimization → explanation. The LLM is confined to intent parsing + explanation prose; every legally significant claim is traceable to a cited government source.
 - The Kenya software-engineer demo produces the spec's target experience: routes identified, best route explained, blockers + legitimate enablers shown, alternative intents surfaced ("a better goal you may want to consider"), counterfactuals recalculated, decision ledger reproducible.
 - Policy version 2024.11.1 (hash wf-kb-0011) curated; figures flagged as planning approximations with a primary-source disclaimer.
+
+---
+Task ID: 10-12
+Agent: main (founding CTO)
+Task: Add authentication system (waitlist + admin approval + demo accounts), migrate to Neon PostgreSQL, push to GitHub, deploy to Vercel with all env vars, verify identical behavior.
+
+Work Log:
+- Migrated Prisma SQLite → Neon PostgreSQL (pooled runtime + direct migration URLs). Added User (role: USER/ADMIN/DEMO), WaitlistEntry models; linked Person to User.
+- Built NextAuth (JWT strategy, credentials provider, serverless-friendly). Middleware protects all routes except /login, /signup, /api/auth, /api/waitlist; /admin requires ADMIN role.
+- Waitlist flow: POST /api/waitlist creates a pending entry (no account). Admin logs in at /admin, sees pending requests, sets a password, approves → account created, entry marked APPROVED. User can then log in.
+- Seed script (scripts/seed.ts, idempotent): real admin ekontetevi@gmail.com / Payswap123456; demo-user@wayfinder.app / wayfinder (DEMO); demo-admin@wayfinder.app / wayfinder (ADMIN). Quick-login links on /login for both demo accounts.
+- Made z-ai-web-dev-sdk env-var driven (src/lib/ai/zai.ts): constructs the client from ZAI_BASE_URL + ZAI_API_KEY on Vercel (no .z-ai-config file needed), falls back to local file in dev, and to deterministic parsing if neither is available. The app works identically with or without the LLM.
+- Vercel readiness: build script = `next build` (removed standalone cp commands); added `postinstall: prisma generate`; next.config serverExternalPackages for bcryptjs/@prisma/client; .gitignore excludes .env, db/, download/, .z-ai-config but allows .env.example.
+- GitHub: created repo pectoraux/wayfinder (public) via API with PAT; pushed (PAT removed from remote URL after push). Verified .env is NOT on GitHub (404), .env.example IS.
+- Vercel: created project `wayfinder` (prj_3qLp1yOG7sUCFRqMrdhQj776wyxA) linked to GitHub repo; set 6 env vars (DATABASE_URL, DIRECT_DATABASE_URL, NEXTAUTH_SECRET [generated], NEXTAUTH_URL, ZAI_BASE_URL, ZAI_API_KEY) targeting production/preview/development; triggered production deploy from main; build succeeded (READY).
+- Production domains: wayfinder-one.vercel.app and wayfinder-mobility.vercel.app (wayfinder.vercel.app and wayfindr.vercel.app were already taken by other projects).
+- Verification (agent-browser against Vercel): / redirects to /login (middleware ✓); demo user quick-login ✓; full mobility plan renders (best route, frontier, counterfactuals, enablers) ✓; decision ledger save writes to Neon (cuid returned) ✓; waitlist signup writes to Neon ✓; real admin login + approve waitlist user ✓; newly-approved user logs in ✓. App behaves identically to local.
+
+Stage Summary:
+- Live at https://wayfinder-mobility.vercel.app and https://wayfinder-one.vercel.app
+- GitHub: https://github.com/pectoraux/wayfinder
+- Auth: real admin (ekontetevi@gmail.com / Payswap123456) + 2 demo accounts with quick login. Sign-up is waitlist-only; admin approves and creates accounts from /admin.
+- DB: Neon PostgreSQL (shared between local dev and Vercel — same connection strings).
+- LLM: env-var driven; deterministic fallbacks ensure identical app behavior even if the Z.ai internal API is unreachable from Vercel.
+- All secrets in Vercel project env vars (encrypted); .env excluded from GitHub.
+- Note: the user's PAT and Vercel token should be rotated now (they stated they would).
