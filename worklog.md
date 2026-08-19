@@ -310,3 +310,26 @@ Work Log:
 
 Stage Summary:
 - All 6 strategy UI components created
+
+---
+Task ID: 35-36
+Agent: main (founding CTO)
+Task: Make the strategy engine the primary user experience — build strategy UI components and integrate into results dashboard.
+
+Work Log:
+- Inspected the actual repository: 224 tests passing, lint clean. The strategy backend (trajectory engine, blocker analyzer, action planner, profile analyzer, intent frontier, preference questions, uncertainty) and API (/api/strategy) existed but were NOT rendered in the UI. The results dashboard still showed the old "BEST ROUTE + route table" layout.
+- STORE INTEGRATION: added `strategy: Strategy | null` to the WayfinderState store. computePlan now fetches /api/strategy in parallel after the plan is computed (non-blocking — the plan renders immediately, strategy loads when ready). reset() clears the strategy.
+- 6 NEW STRATEGY UI COMPONENTS (src/components/wayfinder/strategy/):
+  1. StrategyHero — "Your best current strategy" hero with trajectory label, destination status, duration, cost, countries, optionality, reversibility, key blocker, per-dimension confidence grid, deterministic explanation, simulation warning
+  2. TrajectoryMap — vertical timeline of multi-step trajectory (YOU ARE HERE → entry → PR → citizenship), blocked steps, downstream optionality, country flags
+  3. BlockerSection — "What's blocking you?" with category badges (USER_CONTROLLED/THIRD_PARTY/EXTERNAL/POLICY_DEPENDENT), difficulty, resolution time, unlock options
+  4. ActionPlanSection — "What to do next" grouped by timeframe (7 days, 30 days, 90 days, 6 months), impact bars, highest-leverage action highlighted
+  5. ProfileAnalysisSection — "What you have going for you" (assets) + "The one thing I would change" (highest-leverage change with before/after counts)
+  6. IntentFrontierSection — "Other ways you could optimize" with objective cards + alternative intents
+- RESULTS DASHBOARD INTEGRATION: the strategy sections now render ABOVE the existing route detail/evidence sections. A separator with "Detailed route analysis & evidence" label bridges to the existing UI. The strategy is the primary experience; the route list, frontier chart, counterfactuals, enablers, and evidence trail remain available underneath.
+- Verification: lint clean, 224/224 tests pass, pushed to GitHub (commit 3110923).
+
+Stage Summary:
+- The user now experiences Wayfinder as: YOUR GLOBAL MOBILITY STRATEGY → best trajectory → why → what's blocking you → what would unlock it → what to do next → what you have going for you → the one thing I would change → other ways to optimize → detailed route analysis & evidence.
+- The strategy is fetched non-blocking after the plan renders, so the user sees results immediately and the intelligence layer loads progressively.
+- All 6 strategy UI components use the Wayfinder cartographic design language (emerald-teal primary, amber accent, card-based, wf-panel elevation).
