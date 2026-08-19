@@ -267,4 +267,15 @@ export interface Strategy {
   explanation: string
   /** Generated at. */
   generatedAt: string
+  /** The runtime policy context used to compute this strategy. */
+  policyContext?: {
+    baseSnapshotId: string
+    activeOverlayIds: string[]
+    runtimeVersionId: string
+    runtimeHash: string
+    asOf: string
+    simulationMode: boolean
+  }
+  /** The strategy engine version. */
+  strategyEngineVersion?: string
 }

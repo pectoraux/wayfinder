@@ -23,6 +23,8 @@ interface WayfinderState {
   scenarios: ScenarioResult[]
   error: string | null
   isComputing: boolean
+  strategyLoading: boolean
+  strategyError: boolean
   asOfDate: string | null // ISO date for historical mode; null = today
 
   setPhase: (p: Phase) => void
@@ -51,6 +53,8 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
   scenarios: [],
   error: null,
   isComputing: false,
+  strategyLoading: false,
+  strategyError: false,
   asOfDate: null,
 
   setPhase: (p) => set({ phase: p }),
@@ -114,7 +118,8 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
         isComputing: false,
       })
 
-      // Fetch the strategy (intelligence layer) in parallel — non-blocking
+      // Fetch the strategy (intelligence layer) — non-blocking but tracked
+      set({ strategyLoading: true, strategyError: false, strategy: null })
       fetch('/api/strategy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -122,9 +127,13 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
       })
         .then((r) => r.ok ? r.json() : null)
         .then((d) => {
-          if (d?.strategy) set({ strategy: d.strategy as Strategy })
+          if (d?.strategy) {
+            set({ strategy: d.strategy as Strategy, strategyLoading: false })
+          } else {
+            set({ strategyLoading: false, strategyError: true })
+          }
         })
-        .catch(() => { /* strategy is non-blocking — plan still works */ })
+        .catch(() => { set({ strategyLoading: false, strategyError: true }) })
     } catch (e) {
       set({ error: 'Could not build your mobility plan.', phase: 'results', isComputing: false })
     }
@@ -169,6 +178,8 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
       scenarios: [],
       error: null,
       isComputing: false,
+      strategyLoading: false,
+      strategyError: false,
       asOfDate: null,
     }),
 }))

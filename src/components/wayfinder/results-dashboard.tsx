@@ -33,6 +33,8 @@ export function ResultsDashboard() {
   const narrative = useWayfinder((s) => s.narrative)
   const evidence = useWayfinder((s) => s.evidence)
   const strategy = useWayfinder((s) => s.strategy)
+  const strategyLoading = useWayfinder((s) => s.strategyLoading)
+  const strategyError = useWayfinder((s) => s.strategyError)
   const activeRouteId = useWayfinder((s) => s.activeRouteId)
   const setActiveRoute = useWayfinder((s) => s.setActiveRoute)
   const runCounterfactual = useWayfinder((s) => s.runCounterfactual)
@@ -82,6 +84,56 @@ export function ResultsDashboard() {
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
       {/* ===== STRATEGY LAYER (primary experience) ===== */}
+      {strategyLoading && (
+        <section className="mb-6">
+          <Card className="border-border/60 bg-card/60 p-5 wf-panel">
+            <div className="flex items-center gap-3">
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+              <div>
+                <p className="text-sm font-medium">Building your mobility strategy…</p>
+                <p className="text-xs text-muted-foreground">Analyzing trajectories, blockers, and actions against the current policy.</p>
+              </div>
+            </div>
+          </Card>
+        </section>
+      )}
+      {strategyError && !strategy && (
+        <section className="mb-6">
+          <Card className="border-amber-500/40 bg-amber-500/5 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                <p className="text-sm text-amber-700 dark:text-amber-400">
+                  Your mobility plan is ready. Strategy analysis is temporarily unavailable.
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5 text-xs"
+                onClick={() => {
+                  const { mobilityState: ms, intent: it, asOfDate: ad } = useWayfinder.getState()
+                  if (!ms || !it) return
+                  useWayfinder.setState({ strategyLoading: true, strategyError: false })
+                  fetch('/api/strategy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ state: ms, intent: it, asOfDate: ad ?? undefined }),
+                  })
+                    .then((r) => r.ok ? r.json() : null)
+                    .then((d) => {
+                      if (d?.strategy) useWayfinder.setState({ strategy: d.strategy, strategyLoading: false })
+                      else useWayfinder.setState({ strategyLoading: false, strategyError: true })
+                    })
+                    .catch(() => useWayfinder.setState({ strategyLoading: false, strategyError: true }))
+                }}
+              >
+                Retry strategy
+              </Button>
+            </div>
+          </Card>
+        </section>
+      )}
       {strategy && (
         <>
           <section className="mb-6">

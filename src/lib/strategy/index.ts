@@ -6,6 +6,8 @@
 
 import type { MobilityState, Intent, Route } from '@/lib/domain/types'
 import type { Strategy, Trajectory, IntentFrontier, ObjectiveTrajectory, PreferenceQuestion, UncertaintyAssessment } from './types'
+import type { CanonicalPlanningContext } from './planning-context'
+import { STRATEGY_ENGINE_VERSION } from './planning-context'
 import { buildTrajectories } from './trajectory'
 import { analyzeBlockers } from './blockers'
 import { buildActionPlan } from './actions'
@@ -14,8 +16,13 @@ import { generateRoutes, compositeUtility } from '@/lib/engine/routes'
 import { rankRoutes } from '@/lib/engine/optimize'
 import type { Preference } from '@/lib/domain/types'
 
-/** Build the full strategy output from the user's state + intent. */
-export function buildStrategy(state: MobilityState, intent: Intent, routes: Route[]): Strategy {
+/** Build the full strategy output from the user's state + intent + canonical context. */
+export function buildStrategy(
+  state: MobilityState,
+  intent: Intent,
+  routes: Route[],
+  context?: CanonicalPlanningContext,
+): Strategy {
   // 1. Build trajectories
   const trajectories = buildTrajectories(routes, state, intent)
   const viableTrajectories = trajectories.filter((t) => t.viable)
@@ -63,6 +70,15 @@ export function buildStrategy(state: MobilityState, intent: Intent, routes: Rout
     highestLeverageChange: profileAnalysis.highestLeverageChange,
     explanation,
     generatedAt: new Date().toISOString(),
+    policyContext: context ? {
+      baseSnapshotId: context.policyContext.baseSnapshotId,
+      activeOverlayIds: context.policyContext.activeOverlayIds,
+      runtimeVersionId: context.policyContext.runtimeVersionId,
+      runtimeHash: context.policyContext.runtimeHash,
+      asOf: context.policyContext.asOf,
+      simulationMode: context.policyContext.simulationMode,
+    } : undefined,
+    strategyEngineVersion: STRATEGY_ENGINE_VERSION,
   }
 }
 
