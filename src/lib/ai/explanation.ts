@@ -5,7 +5,7 @@
 // fact, score, or ranking — it only renders the deterministic outputs into
 // readable language. Falls back to assembled strings if the model is unavailable.
 
-import ZAI from 'z-ai-web-dev-sdk'
+import { getZai } from '@/lib/ai/zai'
 import type { MobilityPlan, Route } from '@/lib/domain/types'
 
 export interface PlanNarrative {
@@ -106,7 +106,8 @@ function planDigest(plan: MobilityPlan) {
 export async function generateNarrative(plan: MobilityPlan): Promise<PlanNarrative & { source: 'llm' | 'fallback' }> {
   const fallback = assembleFallback(plan)
   try {
-    const zai = await ZAI.create()
+    const zai = await getZai()
+    if (!zai) return { ...fallback, source: 'fallback' }
     const completion = await zai.chat.completions.create({
       messages: [
         { role: 'assistant', content: SYSTEM_PROMPT },

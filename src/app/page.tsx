@@ -7,6 +7,7 @@ import { ResultsDashboard } from '@/components/wayfinder/results-dashboard'
 import { ComputingView } from '@/components/wayfinder/computing-view'
 import { ErrorBoundary } from '@/components/wayfinder/error-boundary'
 import { WayfinderWordmark } from '@/components/wayfinder/wayfinder-logo'
+import { HeaderAuth } from '@/components/wayfinder/header-auth'
 import { Button } from '@/components/ui/button'
 import { Compass, RotateCcw } from 'lucide-react'
 
@@ -22,13 +23,14 @@ export default function Home() {
             <WayfinderWordmark />
           </button>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Compass className="h-3.5 w-3.5" />
+            <Compass className="hidden h-3.5 w-3.5 sm:block" />
             <span className="hidden sm:inline">Policy v2024.11.1 · Deterministic engine</span>
             {phase !== 'home' && (
               <Button variant="ghost" size="sm" onClick={reset} className="ml-2 h-7 gap-1.5 text-xs">
                 <RotateCcw className="h-3 w-3" /> Start over
               </Button>
             )}
+            <HeaderAuth />
           </div>
         </div>
       </header>

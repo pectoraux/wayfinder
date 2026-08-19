@@ -1,24 +1,78 @@
-// Wayfinder — Prisma schema
+// Wayfinder — Prisma schema (PostgreSQL / Neon)
+//
 // The immigration KNOWLEDGE BASE (countries, pathways, policy rules, evidence,
 // enablers) lives in versioned TypeScript modules under src/lib/knowledge so it
-// is deterministic and reproducible. This database stores only USER-SCOPED data:
-// mobility-state snapshots, intent versions, reproducible decision records,
-// counterfactual scenarios, and consent.
+// is deterministic and reproducible. This database stores USER-SCOPED data:
+// auth identities, waitlist, mobility-state snapshots, intent versions,
+// reproducible decision records, counterfactual scenarios, and consent.
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")        // Neon pooled connection (runtime)
+  directUrl = env("DIRECT_DATABASE_URL") // Neon direct connection (migrations)
 }
 
-/// A person using Wayfinder. Identity is separated from the mobility profile
-/// wherever possible — we keep an opaque internal handle, not PII, by default.
+// ---------------------------------------------------------------------------
+// AUTH
+// ---------------------------------------------------------------------------
+
+/// Role-based access. ADMIN can approve the waitlist and create accounts.
+/// USER is a real approved user. DEMO is a showcase account with quick-login.
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  role         Role     @default(USER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  persons        Person[]
+  waitlist       WaitlistEntry[]
+}
+
+enum Role {
+  USER
+  ADMIN
+  DEMO
+}
+
+/// Sign-ups land here pending admin approval. On approval, a User account is
+/// created and the entry is linked.
+model WaitlistEntry {
+  id        String           @id @default(cuid())
+  email     String           @unique
+  name      String?
+  intent    String?          // what they want to make possible
+  status    WaitlistStatus   @default(PENDING)
+  userId    String?          // set when an account is created
+  user      User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  @@index([status])
+}
+
+enum WaitlistStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// ---------------------------------------------------------------------------
+// MOBILITY PROFILE (existing domain — linked to auth User)
+// ---------------------------------------------------------------------------
+
+/// A person using Wayfinder. Linked to an auth User when authenticated.
 model Person {
   id          String   @id @default(cuid())
-  handle      String?  // optional self-chosen label; never used for matching
+  userId      String?  // optional link to auth User (null for anonymous/legacy)
+  user        User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  handle      String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -27,18 +81,18 @@ model Person {
   decisions   DecisionRecord[]
   scenarios   Scenario[]
   consents    ConsentRecord[]
+
+  @@index([userId])
 }
 
 /// A point-in-time snapshot of a person's real-world mobility state.
-/// Never overwritten — append-only for temporal reproducibility.
 model MobilityStateSnapshot {
   id          String   @id @default(cuid())
   personId    String
   person      Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
   version     Int      @default(1)
-  /// Full structured MobilityState as JSON (see src/lib/domain/types.ts)
   state       Json
-  source      String   @default("intake") // "intake" | "edit" | "document" | "simulated"
+  source      String   @default("intake")
   createdAt   DateTime @default(now())
 
   @@index([personId])
@@ -50,8 +104,8 @@ model IntentRecord {
   personId    String
   person      Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
   version     Int      @default(1)
-  rawInput    String   // the free-form text the user typed
-  intent      Json     // structured Intent object
+  rawInput    String
+  intent      Json
   createdAt   DateTime @default(now())
 
   @@index([personId])
@@ -66,10 +120,10 @@ model DecisionRecord {
   person          Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
   stateVersion    Int
   intentVersion   Int
-  policyVersion   String   // knowledge-base semantic version
-  policyHash      String   // hash of the policy snapshot used
+  policyVersion   String
+  policyHash      String
   asOfDate        DateTime
-  plan            Json     // full MobilityPlan (routes, frontier, enablers, etc.)
+  plan            Json
   createdAt       DateTime @default(now())
 
   @@index([personId])
@@ -80,26 +134,25 @@ model Scenario {
   id            String   @id @default(cuid())
   personId      String
   person        Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
-  label         String   // e.g. "If I learn German to B1"
+  label         String
   baseStateVersion  Int
-  modifiedState Json     // the hypothesized MobilityState
-  deltaSummary  String   // human description of the change
-  plan          Json     // recomputed MobilityPlan
-  frontierDelta Json     // change in mobility frontier vs baseline
+  modifiedState Json
+  deltaSummary  String
+  plan          Json
+  frontierDelta Json
   createdAt     DateTime @default(now())
 
   @@index([personId])
 }
 
-/// Explicit consent records. The marketplace must check consent before exposing
-/// any profile information to an enabler.
+/// Explicit consent records.
 model ConsentRecord {
   id          String   @id @default(cuid())
   personId    String
   person      Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
-  purpose     String   // e.g. "employer_intro" | "incubator_intro"
-  recipient   String   // enabler id / category
-  dataFields  String   // comma-separated field names shared
+  purpose     String
+  recipient   String
+  dataFields  String
   granted     Boolean  @default(false)
   durationDays Int?
   createdAt   DateTime @default(now())

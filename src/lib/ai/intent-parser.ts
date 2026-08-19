@@ -7,7 +7,7 @@
 //
 // z-ai-web-dev-sdk is backend-only.
 
-import ZAI from 'z-ai-web-dev-sdk'
+import { getZai } from '@/lib/ai/zai'
 import type { Intent, IntentGoal } from '@/lib/domain/types'
 import { parseIntentDeterministic, defaultPriorities } from '@/lib/domain/intent'
 
@@ -71,7 +71,8 @@ export async function parseIntentWithLLM(rawInput: string): Promise<{ intent: In
   const fallback = parseIntentDeterministic(rawInput)
 
   try {
-    const zai = await ZAI.create()
+    const zai = await getZai()
+    if (!zai) return { intent: fallback, source: 'fallback' }
     const completion = await zai.chat.completions.create({
       messages: [
         { role: 'assistant', content: SYSTEM_PROMPT },
