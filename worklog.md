@@ -94,3 +94,36 @@ Stage Summary:
 - 9 real pathways refactored into the normalized model; 2 policy snapshots coexist for diff/invalidation demos.
 - The existing product flow is preserved — the route engine still works identically when asOfDate is omitted.
 - snap-2026-01 is clearly labelled HYPOTHETICAL for demonstrating the temporal APIs; it is NOT presented as current law.
+
+---
+Task ID: 16-18
+Agent: main (founding CTO)
+Task: Build the Policy Intelligence Pipeline — monitoring, verification, publication, impact, and admin console.
+
+Work Log:
+- Inspected the full codebase: existing policy types had no provenance, sources had minimal fields, no fetcher, no monitoring job, no candidate facts, no admin console.
+- Provenance model: added PolicyProvenance (AUTHORITATIVE/DERIVED/SIMULATED/TEST_FIXTURE). Marked snap-2026-01 as SIMULATED. Updated getPolicySnapshot/getCurrentPolicySnapshot to NEVER return simulated by default. Updated generateRoutes/buildPlan with simulationMode flag. Verified with tests that simulated data cannot enter the authoritative path.
+- Evolved Source + SourceSnapshot types: monitoringFrequencyHours, lastCheckedAt, lastSuccessfulFetchAt, active, canonicalUrl, name, categorical trust model (OFFICIAL_PRIMARY/SECONDARY/RECOGNIZED_INSTITUTION/etc — NOT fake numeric scores), contentType, contentLength, retrievalStatus, rawStorageLocation, parserVersion.
+- Source fetcher (fetcher.ts): timeout (15s), retries (2 with backoff), rate limiting (500ms/domain), user-agent, content-type validation, redirect handling, content hashing, structured errors. Never silently treats a failed fetch as unchanged.
+- Expanded change classification (7 levels): UNCHANGED, TEXT_CHANGED, STRUCTURAL_CHANGED, POSSIBLE_POLICY_CHANGE, LIKELY_POLICY_CHANGE, VERIFIED_POLICY_CHANGE, FETCH_ERROR. Distinguishes UI/footer changes from policy changes via keyword + number + changed-line analysis.
+- Document diffing (differ.ts): line-level before/after with surrounding context for expert review.
+- CandidateFact model: full provenance (sourceSnapshotId, jurisdictionId, entityType, entityId, entityLabel, changeKind, field, oldValue, newValue, effectiveFrom, effectiveTo, evidence, sourceUrl, model, promptVersion, confidence, extractionStatus, aiInterpretation, reviewedBy, reviewedAt, reviewNote).
+- Verification state machine (7 states): AI_EXTRACTED → PENDING_REVIEW → APPROVED, with REJECTED/NEEDS_MORE_EVIDENCE/DUPLICATE/SUPERSEDED. AI_EXTRACTED CANNOT jump directly to APPROVED. Enforced in publication.ts.
+- Policy publication engine (publication.ts): transactional, 8 consistency checks (structural, evidence, temporal, supersession, transition, graph, route, provenance), hash generation, parent version pointer. Throws if any check fails or candidate is not APPROVED. Never mutates an existing published version.
+- Monitoring job (monitoring.ts): runPolicyMonitoring fetches all active sources, compares hashes, classifies changes, extracts candidates. Behind a clean abstraction for Vercel cron → Temporal migration. monitorSingleSource for the admin "fetch now" button.
+- Plan recomputation + impact (impact.ts): recomputePlanImpact classifies NO_MATERIAL_CHANGE/MINOR_CHANGE/ROUTE_DEGRADED/ROUTE_INVALIDATED/NEW_BETTER_ROUTE. isMaterialImpact ensures only MATERIAL changes produce user alerts. getAffectedDecisionRecordIds finds affected saved plans.
+- Vercel cron config (vercel.json): weekly policy-monitor job at /api/cron/policy-monitor, bearer-protected with CRON_SECRET.
+- Admin policy console (/admin/policy): dashboard (sources monitored, pending reviews, verified changes, fetch failures), review queue with candidate detail (before/after, evidence excerpt, AI interpretation with confidence label, proposed structured rule JSON), approve/reject/request-evidence/mark-duplicate buttons, audit logging for every action.
+- API routes: /api/admin/policy/{dashboard,monitor,candidates,candidates/[id]}, /api/cron/policy-monitor.
+- Prisma schema: CandidateFact, PolicyPublication, AdminAuditRecord, PolicyWatchlist, PolicyAlert models; expanded PolicySource + SourceSnapshot with all new fields.
+- Policy explorer: provenance badges (Official vs Simulated) clearly displayed in snapshot selector and detail.
+- Middleware: /api/cron/* made public (uses its own bearer auth).
+- 47 new tests (93 total): source fetching (success, failure, content-type rejection), change classification (UI change vs policy change vs fetch error), document diffing, AI extraction boundaries, verification state machine (all transitions + illegal ones), policy publication (throws for unapproved, hash, parent, consistency checks), consistency checks (8 checks, provenance fails for SIMULATED), provenance safety (simulated excluded by default, included only with allowSimulated), plan impact (material vs non-material), notifications (only verified material changes alert), content hashing.
+- Verification: lint clean, 93/93 tests pass, main flow intact (demo user → plan → snapshot 2024-11 AUTHORITATIVE), admin policy console works (20 sources monitored, real government pages fetched), policy explorer shows provenance badges, historical mode still works with simulationMode. Deployed to Vercel — all features verified on the live deployment.
+
+Stage Summary:
+- The living-policy loop is proven end-to-end: source monitoring → change detection → candidate extraction → human verification → policy publication → plan recomputation → impact classification → user alerts.
+- Provenance safety is non-negotiable: SIMULATED data is visually marked and programmatically excluded from the authoritative path. No AI-extracted candidate can become law without explicit human approval.
+- The admin console at /admin/policy is the policy operations center: dashboard, review queue, candidate detail, approve/reject workflow, audit trail.
+- Vercel cron is configured for weekly automated monitoring; the job is behind a clean abstraction for future Temporal migration.
+- 93 tests cover all 11 required categories from the spec.
