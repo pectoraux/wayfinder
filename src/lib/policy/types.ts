@@ -587,6 +587,82 @@ export interface PolicyPublication {
   consistencyChecks: ConsistencyCheckResult[]
   /** Human changelog. */
   notes: string
+  /** Lifecycle state. Only PUBLISHED publications are active in the runtime. */
+  status: PublicationStatus
+  /** The overlay changes this publication introduces. */
+  overlay?: PolicyOverlay
+  /** When the publication was rolled back, if applicable. */
+  rolledBackAt?: string
+  /** Who rolled it back. */
+  rolledBackBy?: string
+  /** Reason for rollback. */
+  rollbackReason?: string
+}
+
+/** Publication lifecycle. An APPROVED candidate is not yet PUBLISHED. */
+export type PublicationStatus =
+  | 'DRAFT'
+  | 'PUBLISHED'
+  | 'SUPERSEDED'
+  | 'ROLLED_BACK'
+  | 'INVALIDATED'
+
+/** A normalized representation of a published policy delta — the changes a
+ *  PolicyPublication applies on top of the base knowledge. */
+export interface PolicyOverlay {
+  id: string
+  /** The publication that produced this overlay. */
+  publicationId: string
+  /** The parent policy version this overlay builds on. */
+  parentPolicyVersion: string
+  jurisdictionId: string
+  effectiveFrom: string
+  effectiveTo?: string
+  provenance: PolicyProvenance
+  /** The ordered changes this overlay applies. */
+  changes: PolicyOverlayChange[]
+  contentHash: string
+  createdAt: string
+  publishedAt?: string
+}
+
+/** A single change within an overlay. Identifies what entity+field changed,
+ *  the old and new values, and the effective window. */
+export interface PolicyOverlayChange {
+  entityType: 'requirement' | 'program' | 'transition' | 'status'
+  entityId: string
+  entityLabel: string
+  field: string
+  oldValue?: unknown
+  newValue?: unknown
+  effectiveFrom?: string
+  effectiveTo?: string
+  /** If this change supersedes a prior change, the prior change's entity id. */
+  supersedesId?: string
+}
+
+/** The resolved runtime policy: base knowledge + active published overlays.
+ *  This is what the route engine, eligibility engine, and graph engine use.
+ *  Immutable per version — a new resolution produces a new RuntimePolicySnapshot. */
+export interface RuntimePolicySnapshot {
+  /** The base code snapshot (e.g. snap-2024-11). */
+  baseSnapshotId: string
+  /** The overlay publication ids active for this resolution, in order. */
+  activeOverlayIds: string[]
+  /** A composite version id: base + overlay count. */
+  runtimeVersionId: string
+  /** Deterministic hash of base + overlays + asOf. */
+  runtimeHash: string
+  /** The as-of date this snapshot was resolved for. */
+  asOf: string
+  /** Whether simulation mode was used (simulated overlays included). */
+  simulationMode: boolean
+  /** The resolved requirements (base + overlay-applied). */
+  requirements: NormalizedRequirement[]
+  /** The resolved programs. */
+  programs: ImmigrationProgram[]
+  /** The resolved transitions. */
+  transitions: NormalizedTransition[]
 }
 
 export interface ConsistencyCheckResult {
@@ -647,7 +723,16 @@ export interface PlanImpact {
   recommendedAction: string
   /** Decision record id of the affected plan. */
   decisionRecordId?: string
+  /** Alert severity derived from the impact level. */
+  severity?: AlertSeverity
 }
+
+/** Alert severity model. Do not overuse CRITICAL. */
+export type AlertSeverity =
+  | 'INFO'       // interesting change
+  | 'NOTICE'     // minor route change
+  | 'IMPORTANT'  // meaningful degradation
+  | 'CRITICAL'   // current route invalidated or deadline-sensitive action
 
 // ===========================================================================
 // 15. POLICY WATCHLIST

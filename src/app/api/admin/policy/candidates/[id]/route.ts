@@ -113,7 +113,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         { notes: body.reason, provenance: 'AUTHORITATIVE' },
       )
 
-      // Persist the publication record
+      // Persist the publication record WITH the overlay + status
       await db.policyPublication.create({
         data: {
           policyVersionId: publication.policyVersionId,
@@ -124,8 +124,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           provenance: publication.provenance,
           consistencyChecks: JSON.stringify(publication.consistencyChecks),
           notes: publication.notes,
+          status: 'PUBLISHED',
+          overlay: JSON.stringify(publication.overlay),
+          jurisdictionId: candidate.jurisdictionId,
         },
       })
+
+      // Invalidate the runtime policy cache so the new overlay takes effect
+      const { invalidateRuntimePolicyCache } = await import('@/lib/policy/runtime-resolver')
+      invalidateRuntimePolicyCache()
 
       await db.adminAuditRecord.create({
         data: {

@@ -122,11 +122,24 @@ model DecisionRecord {
   intentVersion   Int
   policyVersion   String
   policyHash      String
+  /// The runtime policy version (base + overlays) this plan was computed under.
+  runtimePolicyVersion String?
+  runtimePolicyHash  String?
   asOfDate        DateTime
   plan            Json
+  /// The previous plan version this one supersedes (for policy-triggered recomputation).
+  previousRecordId String?
+  /// What triggered this plan version: "intake" | "edit" | "POLICY_CHANGE" | "counterfactual"
+  trigger         String   @default("intake")
+  /// The policy publication that triggered this recomputation, if any.
+  policyPublicationId String?
+  /// The user who owns this plan (for alert generation).
+  userId          String?
   createdAt       DateTime @default(now())
 
   @@index([personId])
+  @@index([policyPublicationId])
+  @@index([userId])
 }
 
 /// A counterfactual "What if?" simulation: modified state -> recomputed plan.
@@ -260,8 +273,20 @@ model PolicyPublication {
   provenance    String   @default("AUTHORITATIVE")
   consistencyChecks String // JSON array of {name, passed, details}
   notes         String
+  /// Lifecycle state. Only PUBLISHED publications are active in the runtime.
+  status        String   @default("PUBLISHED") // DRAFT | PUBLISHED | SUPERSEDED | ROLLED_BACK | INVALIDATED
+  /// The overlay JSON (the changes this publication applies).
+  overlay       String?  // JSON-serialized PolicyOverlay
+  /// Rollback tracking.
+  rolledBackAt  DateTime?
+  rolledBackBy  String?
+  rollbackReason String?
+  /// The jurisdiction this publication affects.
+  jurisdictionId String @default("global")
 
   @@index([policyVersionId])
+  @@index([status])
+  @@index([jurisdictionId])
 }
 
 /// Audit log for every admin action in the policy console.
@@ -301,13 +326,25 @@ model PolicyAlert {
   id            String   @id @default(cuid())
   userId        String
   decisionRecordId String?
+  policyPublicationId String? // references the PolicyPublication that triggered this
   policyChangeId String   // references the CandidateFact that was approved
   impactLevel   String   // NO_MATERIAL_CHANGE | MINOR_CHANGE | ROUTE_DEGRADED | ROUTE_INVALIDATED | NEW_BETTER_ROUTE
+  severity      String   @default("NOTICE") // INFO | NOTICE | IMPORTANT | CRITICAL
   title         String
+  whatChanged   String
+  whyItMatters  String
+  recommendedAction String
+  alternativeRoutes String? // JSON array of route labels
   body          String
+  /// Idempotency key: userId + publicationId + planId + impactType — prevents
+  /// duplicate alerts when the monitoring job runs twice.
+  idempotencyKey String @unique
   read          Boolean  @default(false)
+  readAt        DateTime?
+  dismissedAt   DateTime?
   createdAt     DateTime @default(now())
 
   @@index([userId])
   @@index([read])
+  @@index([severity])
 }

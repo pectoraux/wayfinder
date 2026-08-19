@@ -5,7 +5,7 @@
 // key result sections. The LLM never changes a fact or ranking.
 
 import { NextResponse } from 'next/server'
-import { buildPlan } from '@/lib/engine/optimize'
+import { buildPlanWithRuntimePolicy } from '@/lib/engine/optimize'
 import { withEnablers } from '@/lib/engine/enabler-match'
 import { generateNarrative } from '@/lib/ai/explanation'
 import { defaultScenarios, type ScenarioSpec } from '@/lib/engine/simulate'
@@ -21,6 +21,8 @@ interface PlanRequestBody {
   scenarios?: ScenarioSpec[]
   generateNarrative?: boolean
   asOfDate?: string // ISO date — when provided, evaluates against the policy snapshot active on that date
+  simulationMode?: boolean
+  userId?: string
 }
 
 export async function POST(req: Request) {
@@ -31,7 +33,12 @@ export async function POST(req: Request) {
     }
 
     const scenarios = body.scenarios ?? defaultScenarios(body.state)
-    let plan = buildPlan(body.state, body.intent, scenarios, body.asOfDate)
+    // Use the async runtime policy resolver (base knowledge + DB overlays)
+    let plan = await buildPlanWithRuntimePolicy(body.state, body.intent, scenarios, {
+      asOfDate: body.asOfDate,
+      simulationMode: body.simulationMode ?? false,
+      userId: body.userId,
+    })
     plan = withEnablers(plan)
 
     const wantNarrative = body.generateNarrative !== false

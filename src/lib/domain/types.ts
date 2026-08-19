@@ -606,6 +606,12 @@ export interface MobilityPlan {
   policyHash: string
   /** The normalized policy snapshot this plan was computed against. */
   policySnapshotId?: string
+  /** The runtime policy version (base + overlays). */
+  runtimePolicyVersion?: string
+  /** The runtime policy hash (base + overlays + asOf). */
+  runtimePolicyHash?: string
+  /** The active overlay publication ids this plan was computed with. */
+  activeOverlayIds?: string[]
   state: MobilityState
   intent: Intent
   routes: Route[]

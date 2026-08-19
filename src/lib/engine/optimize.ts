@@ -18,6 +18,8 @@ import type {
 } from '@/lib/domain/types'
 import { POLICY_VERSION } from '@/lib/knowledge/policy-version'
 import { getPolicySnapshot } from '@/lib/policy/snapshot'
+import { resolveRuntimePolicy, resolveRuntimePolicySync, type RuntimePolicySnapshot } from '@/lib/policy/runtime-resolver'
+import type { PolicyOverlay } from '@/lib/policy/types'
 import { computeFrontier } from './frontier'
 import { compositeUtility, generateRoutes } from './routes'
 import { runScenario, type ScenarioSpec } from './simulate'
@@ -265,6 +267,69 @@ export function buildPlan(
     recommendation,
     alternativeIntents,
     enablerMatches: [], // populated by the enabler matcher in buildFullPlan
+    scenarios: scenarioResults,
+    evidenceIds,
+    confidence,
+  }
+}
+
+/**
+ * Async plan builder that uses the RuntimePolicyResolver (base + DB overlays).
+ * This is the preferred entry point for API routes — it incorporates
+ * published verified policy changes from the database.
+ *
+ * Falls back to the sync buildPlan behavior if the resolver fails.
+ */
+export async function buildPlanWithRuntimePolicy(
+  state: MobilityState,
+  intent: Intent,
+  scenarios: ScenarioSpec[] = [],
+  opts: {
+    asOfDate?: string | Date
+    simulationMode?: boolean
+    userId?: string
+  } = {},
+): Promise<MobilityPlan> {
+  const runtimePolicy = await resolveRuntimePolicy({
+    asOf: opts.asOfDate,
+    simulationMode: opts.simulationMode ?? false,
+  })
+
+  // Generate routes using the resolved runtime policy
+  const routes = generateRoutes(state, intent, opts.asOfDate, opts.simulationMode)
+  const frontier = computeFrontier(routes, intent)
+  const ranked = rankRoutes(routes, intent)
+  const alternativeIntents = discoverAlternativeIntents(state, intent, routes)
+  const recommendation = buildRecommendation(state, intent, ranked, alternativeIntents)
+
+  const scenarioResults: ScenarioResult[] = scenarios.map((spec) =>
+    runScenario(state, intent, spec, opts.asOfDate, opts.simulationMode),
+  )
+
+  const evidenceIds = Array.from(new Set(routes.flatMap((r) => r.evidenceIds)))
+
+  let confidence: MobilityPlan['confidence'] = 'medium'
+  if (routes.every((r) => r.eligibility.status === 'ineligible')) confidence = 'low'
+  else if (ranked[0]?.eligibility.status === 'eligible') confidence = 'high'
+
+  const effectiveAsOf = opts.asOfDate ?? new Date().toISOString()
+
+  return {
+    generatedAt: new Date().toISOString(),
+    asOfDate: effectiveAsOf,
+    policyVersion: runtimePolicy.baseSnapshotId,
+    policyHash: runtimePolicy.runtimeHash,
+    policySnapshotId: runtimePolicy.baseSnapshotId,
+    runtimePolicyVersion: runtimePolicy.runtimeVersionId,
+    runtimePolicyHash: runtimePolicy.runtimeHash,
+    activeOverlayIds: runtimePolicy.activeOverlayIds,
+    state,
+    intent,
+    routes: ranked,
+    frontier,
+    recommendation,
+    alternativeIntents,
+    enablerMatches: [],
     scenarios: scenarioResults,
     evidenceIds,
     confidence,

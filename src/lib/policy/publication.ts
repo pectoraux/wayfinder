@@ -13,6 +13,8 @@ import type {
   ConsistencyCheckResult,
   PolicyPublication,
   PolicyProvenance,
+  PolicyOverlay,
+  PolicyOverlayChange,
 } from './types'
 import { REQUIREMENTS, TRANSITIONS, PROGRAMS, STATUSES, SNAPSHOTS } from './knowledge'
 import { createHash } from 'crypto'
@@ -198,9 +200,24 @@ export function publishPolicyVersion(
     .digest('hex')
     .slice(0, 16)
 
-  // 5. Publish
+  // 4b. Build the PolicyOverlay (the normalized delta)
+  const overlay: PolicyOverlay = {
+    id: `overlay-${Date.now()}`,
+    publicationId: `pub-${Date.now()}`,
+    parentPolicyVersion: parentSnapshotId,
+    jurisdictionId: candidate.jurisdictionId,
+    effectiveFrom: candidate.effectiveFrom ?? new Date().toISOString(),
+    effectiveTo: candidate.effectiveTo,
+    provenance,
+    changes: buildOverlayChanges(candidate),
+    contentHash,
+    createdAt: new Date().toISOString(),
+    publishedAt: new Date().toISOString(),
+  }
+
+  // 5. Publish (with status + overlay)
   const publication: PolicyPublication = {
-    id: `pub-${Date.now()}`,
+    id: overlay.publicationId,
     policyVersionId: newVersionId,
     parentVersionId: parentSnapshotId,
     candidateFactIds: [candidate.id],
@@ -210,9 +227,27 @@ export function publishPolicyVersion(
     provenance,
     consistencyChecks: checks,
     notes: options.notes ?? `Published from candidate: ${candidate.entityLabel} — ${candidate.changeKind}`,
+    status: 'PUBLISHED',
+    overlay,
   }
 
   return publication
+}
+
+/** Build the overlay changes from a candidate fact. */
+function buildOverlayChanges(candidate: CandidateFact): PolicyOverlayChange[] {
+  const changes: PolicyOverlayChange[] = [{
+    entityType: candidate.entityType as PolicyOverlayChange['entityType'],
+    entityId: candidate.entityId ?? candidate.entityLabel,
+    entityLabel: candidate.entityLabel,
+    field: candidate.field ?? 'value',
+    oldValue: candidate.oldValue,
+    newValue: candidate.newValue,
+    effectiveFrom: candidate.effectiveFrom,
+    effectiveTo: candidate.effectiveTo,
+    supersedesId: undefined, // populated if the candidate references a superseded entity
+  }]
+  return changes
 }
 
 // ---------------------------------------------------------------------------
