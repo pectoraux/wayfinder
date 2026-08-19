@@ -270,3 +270,27 @@ Stage Summary:
 - Health endpoint exposes the running commit — we can always verify which code is live.
 - PolicyEvent is now a first-class domain object with its own type, DB model, API, and pages. It's the canonical representation of a verified policy change, referenced by all downstream objects (alerts, watchlists, plan history).
 - The policy event feed (/policy/events) and detail page (/policy/events/[id]) are public — users can browse verified policy changes without logging in.
+
+---
+Task ID: 32-34
+Agent: main (founding CTO)
+Task: Build the intelligence layer — trajectories, blockers, actions, profile analysis, intent frontier.
+
+Work Log:
+- Inspected the actual repository: 177 tests passing, lint clean. The existing intelligence (alternative intents, counterfactuals, enablers) was structurally present but superficial — 4 hardcoded alternative-intent templates, static counterfactual scenarios, flat enabler list, no trajectory search, no action planner, no profile analysis.
+- TRAJECTORY ENGINE: converts single-program routes into multi-step legal trajectories (current → entry → PR → citizenship). Calculates downstream optionality via the MobilityGraph (how many future transitions remain). Models reversibility. Discovers cross-country trajectories (e.g., EU PR → freedom of movement in another EU country).
+- BLOCKER ANALYZER: classifies each blocker as USER_CONTROLLED / THIRD_PARTY / EXTERNAL / POLICY_DEPENDENT. Identifies unlock options (credential recognition, employer offer, language cert, incubator, endorsement, savings, business formation). Assesses difficulty and estimated resolution time. User-controlled blockers get a userAction; third-party blockers get a thirdPartyRole.
+- ACTION PLANNER: turns blockers into sequenced next-actions ordered by impact, time sensitivity, and dependency. Timeframes: 7 days, 30 days, 90 days, 6 months. Identifies the single highest-leverage action.
+- PROFILE ANALYZER: identifies the user's top assets (occupation, remote work, language, education, savings, income, age) ranked by leverage. Identifies biggest gaps (degree recognition, language, employer offer, incubator, endorsement) ranked by frontier expansion. Finds the single highest-leverage change via counterfactual analysis: runs 6 scenarios and measures which opens the most new routes or resolves the most blockers.
+- INTENT FRONTIER: for each objective (income, residence, citizenship, entrepreneurship, mobility, cost), finds the best trajectory. Shows the Pareto-optimal objectives — genuinely different strategies.
+- ENHANCED ALTERNATIVE INTENTS: dynamic discovery based on profile + opportunity set (not hardcoded templates). Surfaces alternatives when: highest-leverage change exists, remote income opens D7/nomad paths, founder status opens startup visas, faster routes exist, citizenship-optimized routes differ.
+- PREFERENCE ELICITATION: generates high-value questions that change the decision frontier (income vs residence, speed vs optionality, study-first). Max 3 questions, each with rationale and affected routes.
+- UNCERTAINTY ASSESSMENT: per-dimension confidence (HIGH/MEDIUM/LOW/UNKNOWN). Real-world approval outcome is always UNKNOWN — Wayfinder never claims to predict individual approval decisions.
+- STRATEGY API: POST /api/strategy returns the full intelligence output (trajectories, blockers, unlocks, action plan, profile analysis, intent frontier, alternative intents, preference questions, uncertainty, explanation).
+- 47 new tests (224 total): trajectories (building, optionality, viability, cross-country), blockers (classification, unlocks, difficulty, user action, third-party role), actions (timeframe, impact, sorting, highest-leverage), profile (assets, gaps, highest-leverage change), full strategy (all fields, uncertainty, explanation), preference elicitation, intent frontier, enabler safety (no fraud).
+- Verification: lint clean, 224/224 tests pass, pushed to GitHub.
+
+Stage Summary:
+- Wayfinder is no longer just a visa database. The intelligence layer turns routes into multi-step trajectories, classifies blockers by who controls them, generates sequenced action plans, identifies the user's highest-leverage assets and gaps, discovers alternative objectives dynamically, asks high-value preference questions, and makes uncertainty explicit.
+- The single highest-leverage change ("The one thing I would change") is derived from deterministic counterfactual analysis — not LLM guessing.
+- All intelligence is deterministic: the LLM is never used to invent trajectories, rank eligibility, or create unsupported probabilities.
