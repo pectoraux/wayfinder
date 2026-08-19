@@ -129,7 +129,7 @@ model DecisionRecord {
   plan            Json
   /// The previous plan version this one supersedes (for policy-triggered recomputation).
   previousRecordId String?
-  /// What triggered this plan version: "intake" | "edit" | "POLICY_CHANGE" | "counterfactual"
+  /// What triggered this plan version: "intake" | "edit" | "POLICY_CHANGE" | "counterfactual" | "OBJECTIVE_ADOPT"
   trigger         String   @default("intake")
   /// The policy publication that triggered this recomputation, if any.
   policyPublicationId String?
@@ -137,6 +137,12 @@ model DecisionRecord {
   userId          String?
   /// Plan lifecycle status: ACTIVE (current), SUPERSEDED (replaced by a newer version), ARCHIVED (user dismissed)
   planStatus      String   @default("ACTIVE")
+  /// The strategy engine version used to compute this plan's strategy.
+  strategyEngineVersion String?
+  /// The objective this plan was computed for (e.g., "income", "residence").
+  objectiveId     String?
+  /// The full strategy snapshot (JSON) at the time of computation.
+  strategySnapshot Json?
   createdAt       DateTime @default(now())
 
   @@index([personId])
@@ -144,6 +150,7 @@ model DecisionRecord {
   @@index([userId])
   @@index([planStatus])
   @@index([userId, planStatus])
+  @@index([userId, objectiveId])
 }
 
 /// A counterfactual "What if?" simulation: modified state -> recomputed plan.

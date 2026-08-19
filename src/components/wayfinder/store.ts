@@ -46,6 +46,8 @@ interface WayfinderState {
   exploreObjective: (objective: string) => Promise<void>
   adoptStrategy: (objective: string) => Promise<void>
   clearExplored: () => void
+  loadActiveStrategy: () => Promise<void>
+  updateProfile: (updates: Record<string, unknown>) => Promise<void>
   reset: () => void
 }
 
@@ -311,7 +313,7 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
   },
 
   adoptStrategy: async (objective) => {
-    const { mobilityState, intent, asOfDate, exploredStrategy } = get()
+    const { mobilityState, intent, asOfDate, exploredStrategy, strategy: currentStrategy, plan } = get()
     if (!mobilityState || !intent) return
 
     // Build the adopted intent with the new objective's priorities
@@ -326,23 +328,69 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
     const adoptedPriorities = OBJECTIVE_PRIORITIES[objective] ?? intent.priorities
     const adoptedIntent: Intent = { ...intent, priorities: adoptedPriorities }
 
-    // If we have an explored strategy, use it; otherwise recompute
-    if (exploredStrategy) {
-      set({
-        strategy: exploredStrategy,
+    // Use the explored strategy if available
+    const newStrategy = exploredStrategy ?? currentStrategy
+    if (!newStrategy) return
+
+    // Update client state immediately
+    set({
+      strategy: newStrategy,
+      intent: adoptedIntent,
+      activeObjective: objective,
+      exploredObjective: null,
+      exploredStrategy: null,
+    })
+    await get().syncActions()
+
+    // Persist to the DB (non-blocking)
+    fetch('/api/strategy/adopt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        strategy: newStrategy,
+        plan: plan ?? undefined,
+        objectiveId: objective,
+        state: mobilityState,
         intent: adoptedIntent,
-        activeObjective: objective,
-        exploredObjective: null,
-        exploredStrategy: null,
-      })
-      await get().syncActions()
-    } else {
-      set({ intent: adoptedIntent, activeObjective: objective })
-      await get().recomputeStrategy()
-    }
+      }),
+    }).catch(() => { /* non-blocking */ })
   },
 
   clearExplored: () => set({ exploredObjective: null, exploredStrategy: null }),
+
+  loadActiveStrategy: async () => {
+    try {
+      const res = await fetch('/api/strategy/adopt')
+      if (!res.ok) return
+      const data = await res.json()
+      if (data?.strategy) {
+        set({
+          strategy: data.strategy as Strategy,
+          activeObjective: data.objectiveId ?? null,
+        })
+      }
+    } catch { /* non-blocking */ }
+  },
+
+  updateProfile: async (updates) => {
+    const { mobilityState } = get()
+    if (!mobilityState) return
+    try {
+      const res = await fetch('/api/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updates, currentState: mobilityState }),
+      })
+      if (!res.ok) return
+      const data = await res.json()
+      if (data?.updatedState) {
+        set({ mobilityState: data.updatedState })
+        await get().recomputeStrategy()
+      }
+    } catch (e) {
+      console.error('updateProfile', e)
+    }
+  },
 
   reset: () =>
     set({
