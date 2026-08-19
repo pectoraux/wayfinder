@@ -405,8 +405,16 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
       const res = await fetch('/api/profile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        // currentState is a FALLBACK for the first-ever profile. The server
+        // uses its authoritative latest snapshot as the base for all
+        // subsequent updates — it does NOT trust this client state blindly.
         body: JSON.stringify({ updates, currentState: mobilityState }),
       })
+      if (res.status === 409) {
+        // Concurrent update — reload the server-authoritative state and retry once.
+        await get().loadActiveStrategy()
+        return
+      }
       if (!res.ok) return
       const data = await res.json()
       if (data?.updatedState) {

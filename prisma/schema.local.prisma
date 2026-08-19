@@ -90,6 +90,8 @@ model Person {
 }
 
 /// A point-in-time snapshot of a person's real-world mobility state.
+/// VERSION UNIQUENESS: @@unique([personId, version]) — DB-level backstop
+/// for transactional MAX(version)+1 allocation.
 model MobilityStateSnapshot {
   id          String   @id @default(cuid())
   personId    String
@@ -99,10 +101,12 @@ model MobilityStateSnapshot {
   source      String   @default("intake")
   createdAt   DateTime @default(now())
 
+  @@unique([personId, version])
   @@index([personId])
 }
 
 /// A versioned record of the user's expressed intent + inferred objectives.
+/// VERSION UNIQUENESS: @@unique([personId, version]) — DB-level backstop.
 model IntentRecord {
   id          String   @id @default(cuid())
   personId    String
@@ -112,6 +116,7 @@ model IntentRecord {
   intent      Json
   createdAt   DateTime @default(now())
 
+  @@unique([personId, version])
   @@index([personId])
 }
 

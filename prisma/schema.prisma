@@ -91,6 +91,13 @@ model Person {
 }
 
 /// A point-in-time snapshot of a person's real-world mobility state.
+///
+/// VERSION UNIQUENESS: `@@unique([personId, version])` enforces at the DB
+/// level that no two snapshots for the same person can share a version
+/// number. This is the correctness backstop for the transactional
+/// `MAX(version)+1` allocation in /api/profile — even if two concurrent
+/// transactions both read the same max, only one can commit; the other
+/// gets a unique-constraint violation and must retry.
 model MobilityStateSnapshot {
   id          String   @id @default(cuid())
   personId    String
@@ -100,10 +107,15 @@ model MobilityStateSnapshot {
   source      String   @default("intake")
   createdAt   DateTime @default(now())
 
+  @@unique([personId, version])
   @@index([personId])
 }
 
 /// A versioned record of the user's expressed intent + inferred objectives.
+///
+/// VERSION UNIQUENESS: `@@unique([personId, version])` enforces at the DB
+/// level that no two intent records for the same person can share a version.
+/// Same backstop as MobilityStateSnapshot.
 model IntentRecord {
   id          String   @id @default(cuid())
   personId    String
@@ -113,6 +125,7 @@ model IntentRecord {
   intent      Json
   createdAt   DateTime @default(now())
 
+  @@unique([personId, version])
   @@index([personId])
 }
 

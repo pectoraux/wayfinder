@@ -3,15 +3,23 @@
 // Returns the new state version + triggers strategy recomputation on the client.
 //
 // CRITICAL INTEGRITY RULES:
-//   1. Version allocation is TRANSACTIONAL: `MAX(version) + 1` inside a
-//      Prisma transaction. The previous `count(...) + 1` approach could
-//      produce the same version number under concurrent writes.
-//   2. Snapshots are immutable — we never mutate an existing row.
-//   3. User-entered facts preserve USER_CONFIRMED provenance. We never
-//      accidentally promote a user edit to OFFICIAL or GOVERNMENT_VERIFIED.
+//   1. SERVER AUTHORITY: the base state is the server's LATEST committed
+//      MobilityStateSnapshot, NOT the client-supplied `currentState`. The
+//      client's `currentState` is only used as a fallback when the server has
+//      no snapshot yet (first-ever profile). This prevents a stale or
+//      malicious client from overwriting the profile with an outdated base
+//      or from clobbering a concurrent edit.
+//   2. VERSION UNIQUENESS: version allocation is `MAX(version)+1` inside a
+//      transaction, backed by a DB-level `@@unique([personId, version])`
+//      constraint. Even if two concurrent transactions both read the same
+//      max, only one can commit; the other gets a P2002 and must retry.
+//   3. IMMUTABILITY: snapshots are never mutated — each update creates a new row.
+//   4. PROVENANCE: user-entered facts preserve USER_CONFIRMED provenance. We
+//      never accidentally promote a user edit to OFFICIAL or GOVERNMENT_VERIFIED.
 //
-// Body: { updates: Partial<MobilityState>, currentState: MobilityState }
-// The server merges the updates into the current state and snapshots the result.
+// Body: { updates: Partial<MobilityState>, currentState?: MobilityState }
+// The server loads its authoritative latest snapshot, merges the updates into
+// that, and persists the result as a new version.
 
 import { NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
@@ -24,7 +32,11 @@ export const dynamic = 'force-dynamic'
 
 interface ProfileUpdateBody {
   updates: Record<string, unknown>
-  currentState: MobilityState
+  /** Optional client-side current state. Used ONLY as a fallback when the
+   *  server has no snapshot for this user yet (first-ever profile). For all
+   *  subsequent updates, the server's latest committed snapshot is the
+   *  authoritative base. */
+  currentState?: MobilityState
 }
 
 /** Deep-merge updates into the current state, returning a new MobilityState.
@@ -61,20 +73,23 @@ export async function POST(req: Request) {
 
   try {
     const body = (await req.json()) as ProfileUpdateBody
-    if (!body?.updates || !body?.currentState) {
-      return NextResponse.json({ error: 'updates and currentState are required' }, { status: 400 })
+    if (!body?.updates) {
+      return NextResponse.json({ error: 'updates is required' }, { status: 400 })
     }
 
-    // Apply the updates to the current state
-    const updatedState = applyUpdates(body.currentState, body.updates)
-
-    // TRANSACTIONAL version allocation. The previous `count(...) + 1` approach
-    // could produce the same version number under concurrent writes — two
-    // simultaneous POSTs would both see count=N and both create version N+1.
-    // `MAX(version) + 1` inside a transaction with serializable isolation
-    // (Prisma's default for SQLite/Postgres interactive transactions) prevents
-    // that race: the second transaction sees the first's commit when it
-    // re-reads the max, or fails and we retry.
+    // SERVER-AUTHORITATIVE + TRANSACTIONAL update.
+    //
+    // The base state is the server's LATEST committed MobilityStateSnapshot.
+    // We do NOT trust the client's `currentState` except as a first-ever
+    // fallback. This prevents a stale client from clobbering a newer server
+    // state, and prevents a malicious client from rewriting history.
+    //
+    // Version allocation is `MAX(version)+1` inside the transaction, backed
+    // by the DB-level `@@unique([personId, version])` constraint. If two
+    // concurrent transactions both read the same max and both try to insert
+    // the same version, one commits and the other gets a P2002 unique-
+    // constraint violation — which we surface as a 409 so the client can
+    // retry.
     const result = await db.$transaction(async (tx) => {
       // Find or create a Person for this user
       let person = await tx.person.findFirst({ where: { userId } })
@@ -82,14 +97,33 @@ export async function POST(req: Request) {
         person = await tx.person.create({ data: { userId } })
       }
 
-      // MAX(version) for this person — concurrency-safe inside the transaction
+      // Load the SERVER-AUTHORITATIVE latest snapshot.
       const latest = await tx.mobilityStateSnapshot.findFirst({
         where: { personId: person.id },
         orderBy: { version: 'desc' },
       })
-      const newVersion = (latest?.version ?? 0) + 1
 
-      // Create a new immutable MobilityStateSnapshot
+      // Determine the base state: server's latest, or the client fallback.
+      // The client fallback is only used when the server has NO snapshot
+      // (first-ever profile for this user).
+      let baseState: MobilityState
+      let newVersion: number
+      if (latest) {
+        baseState = latest.state as unknown as MobilityState
+        newVersion = latest.version + 1
+      } else if (body.currentState) {
+        baseState = body.currentState
+        newVersion = 1
+      } else {
+        // No server snapshot AND no client fallback — cannot proceed.
+        throw new Error('NO_BASE_STATE')
+      }
+
+      // Apply the user's updates to the authoritative base state.
+      const updatedState = applyUpdates(baseState, body.updates)
+
+      // Create a new immutable MobilityStateSnapshot. The @@unique([personId, version])
+      // constraint is the concurrency backstop.
       const snapshot = await tx.mobilityStateSnapshot.create({
         data: {
           personId: person.id,
@@ -99,16 +133,30 @@ export async function POST(req: Request) {
         },
       })
 
-      return { snapshot, newVersion }
+      return { snapshot, newVersion, updatedState }
     })
 
     return NextResponse.json({
       snapshotId: result.snapshot.id,
       stateVersion: result.newVersion,
-      updatedState,
+      updatedState: result.updatedState,
       source: 'USER_CONFIRMED',
     })
-  } catch (err) {
+  } catch (err: any) {
+    // P2002 = unique constraint violation on (personId, version).
+    // A concurrent update won the race; the client should retry.
+    if (err?.code === 'P2002') {
+      return NextResponse.json(
+        { error: 'A concurrent profile update is in progress. Please retry.' },
+        { status: 409 },
+      )
+    }
+    if (err?.message === 'NO_BASE_STATE') {
+      return NextResponse.json(
+        { error: 'No existing profile found and no base state provided.' },
+        { status: 400 },
+      )
+    }
     console.error('[/api/profile]', err)
     return NextResponse.json({ error: 'Failed to update profile' }, { status: 500 })
   }
