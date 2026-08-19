@@ -28,7 +28,7 @@ import { getFullStrategyStaleness, deriveStalenessStatus } from '@/lib/strategy/
 import { STRATEGY_ENGINE_VERSION } from '@/lib/strategy/planning-context'
 import { buildStrategy } from '@/lib/strategy'
 import { buildCanonicalPlanningContext } from '@/lib/strategy/planning-context'
-import { verifyStrategyRecord, replayStrategy } from '@/lib/strategy/replay'
+import { verifyStrategyRecord, replayStrategy, compareStrategyReplay } from '@/lib/strategy/replay'
 import { exampleState } from '@/lib/domain/state'
 import { parseIntentDeterministic } from '@/lib/domain/intent'
 import { generateRoutes } from '@/lib/engine/routes'
@@ -807,38 +807,8 @@ describe('Strategy replay', () => {
     await cleanupTestUser(replayUserId)
   })
 
-  it('verifyStrategyRecord — valid record passes all checks', async () => {
-    const person = await ensurePerson(replayUserId)
-    const snap = await createMobilitySnapshot(person.id, baseState)
-    const intentRec = await createIntentRecord(person.id, baseIntent)
-
-    const ctx = await buildCanonicalPlanningContext({
-      state: baseState, intent: baseIntent, asOfDate: '2025-06-01',
-    })
-    const strategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
-
-    const record = await adoptStrategy({
-      userId: replayUserId, personId: person.id, strategy, objectiveId: 'residence',
-      stateSnapshotId: snap.id, stateVersion: snap.version,
-      intentRecordId: intentRec.id, intentVersion: intentRec.version,
-      policyContext: strategy.policyContext!,
-    })
-
-    const verification = await verifyStrategyRecord(record.id)
-    expect(verification.valid).toBe(true)
-    expect(verification.checks.objectiveExists).toBe(true)
-    expect(verification.checks.stateSnapshotExists).toBe(true)
-    expect(verification.checks.intentVersionExists).toBe(true)
-    expect(verification.checks.policyVersionExists).toBe(true)
-    expect(verification.checks.engineVersionExists).toBe(true)
-    expect(verification.checks.snapshotMetadataMatchesRecord).toBe(true)
-    expect(verification.errors).toHaveLength(0)
-    expect(verification.provenance).not.toBeNull()
-    expect(verification.provenance!.mobilityStateSnapshotId).toBe(snap.id)
-    expect(verification.provenance!.intentRecordId).toBe(intentRec.id)
-  })
-
-  it('verifyStrategyRecord — reports missing state snapshot', async () => {
+  // Helper: adopt a strategy for this test user so we have a record to replay
+  async function adoptForReplay(objectiveId: string) {
     const person = await ensurePerson(replayUserId)
     const snap = await createMobilitySnapshot(person.id, baseState)
     const intentRec = await createIntentRecord(person.id, baseIntent)
@@ -846,73 +816,18 @@ describe('Strategy replay', () => {
       state: baseState, intent: baseIntent, asOfDate: '2025-06-01',
     })
     const strategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
-
     const record = await adoptStrategy({
-      userId: replayUserId, personId: person.id, strategy, objectiveId: 'income',
+      userId: replayUserId, personId: person.id, strategy, objectiveId,
       stateSnapshotId: snap.id, stateVersion: snap.version,
       intentRecordId: intentRec.id, intentVersion: intentRec.version,
       policyContext: strategy.policyContext!,
     })
+    return { record, person, snap, intentRec, strategy, ctx }
+  }
 
-    // Delete the state snapshot
-    await db.mobilityStateSnapshot.delete({ where: { id: snap.id } })
-
-    const verification = await verifyStrategyRecord(record.id)
-    expect(verification.valid).toBe(false)
-    expect(verification.checks.stateSnapshotExists).toBe(false)
-    expect(verification.errors.some((e) => e.includes('not found'))).toBe(true)
-  })
-
-  it('replayStrategy — returns STATE_UNAVAILABLE when the snapshot is deleted', async () => {
-    const person = await ensurePerson(replayUserId)
-    const snap = await createMobilitySnapshot(person.id, baseState)
-    const intentRec = await createIntentRecord(person.id, baseIntent)
-    const ctx = await buildCanonicalPlanningContext({
-      state: baseState, intent: baseIntent, asOfDate: '2025-06-01',
-    })
-    const strategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
-
-    const record = await adoptStrategy({
-      userId: replayUserId, personId: person.id, strategy, objectiveId: 'citizenship',
-      stateSnapshotId: snap.id, stateVersion: snap.version,
-      intentRecordId: intentRec.id, intentVersion: intentRec.version,
-      policyContext: strategy.policyContext!,
-    })
-
-    // Delete the state snapshot — the historical strategy must NOT be replayable
-    // against today's profile.
-    await db.mobilityStateSnapshot.delete({ where: { id: snap.id } })
-
-    const result = await replayStrategy(record.id)
-    expect(result.status).toBe('STATE_UNAVAILABLE')
-    expect(result.storedStrategy).toBeDefined() // historical evidence preserved
-    expect(result.explanation).toContain('deleted')
-  })
-
-  it('replayStrategy — returns INTENT_UNAVAILABLE when the intent record is deleted', async () => {
-    const person = await ensurePerson(replayUserId)
-    const snap = await createMobilitySnapshot(person.id, baseState)
-    const intentRec = await createIntentRecord(person.id, baseIntent)
-    const ctx = await buildCanonicalPlanningContext({
-      state: baseState, intent: baseIntent, asOfDate: '2025-06-01',
-    })
-    const strategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
-
-    const record = await adoptStrategy({
-      userId: replayUserId, personId: person.id, strategy, objectiveId: 'mobility',
-      stateSnapshotId: snap.id, stateVersion: snap.version,
-      intentRecordId: intentRec.id, intentVersion: intentRec.version,
-      policyContext: strategy.policyContext!,
-    })
-
-    // Delete the intent record
-    await db.intentRecord.delete({ where: { id: intentRec.id } })
-
-    const result = await replayStrategy(record.id)
-    expect(result.status).toBe('INTENT_UNAVAILABLE')
-    expect(result.storedStrategy).toBeDefined()
-  })
-
+  // -------------------------------------------------------------------------
+  // 1. EXACT_MATCH — same persisted inputs + same engine + same policy world
+  // -------------------------------------------------------------------------
   it('replayStrategy — returns EXACT_MATCH when nothing has changed', async () => {
     const exactUserId = `replay-exact-${Date.now()}`
     await cleanupTestUser(exactUserId)
@@ -933,15 +848,381 @@ describe('Strategy replay', () => {
     })
 
     const result = await replayStrategy(record.id)
-    // EXACT_MATCH or ENGINE_CHANGED (the latter if the deterministic engine
-    // produces a slightly different structural output, which is acceptable
-    // as long as it's not POLICY_UNAVAILABLE / STATE_UNAVAILABLE / etc.)
-    expect(['EXACT_MATCH', 'ENGINE_CHANGED']).toContain(result.status)
+    // EXACT_MATCH requires the deterministic output to match across ALL dimensions
+    expect(result.status).toBe('EXACT_MATCH')
+    expect(result.comparison).toBeDefined()
+    expect(result.comparison!.exact).toBe(true)
+    expect(result.comparison!.differences).toHaveLength(0)
     expect(result.replayedStrategy).toBeDefined()
     expect(result.provenance.mobilityStateSnapshotId).toBe(snap.id)
     expect(result.provenance.intentRecordId).toBe(intentRec.id)
 
     await cleanupTestUser(exactUserId)
+  })
+
+  // -------------------------------------------------------------------------
+  // 2. STATE_UNAVAILABLE — referenced mobility snapshot missing
+  // -------------------------------------------------------------------------
+  it('replayStrategy — returns STATE_UNAVAILABLE when the snapshot is deleted', async () => {
+    const { record, snap } = await adoptForReplay('citizenship')
+    // Delete the state snapshot — the historical strategy must NOT be replayable
+    // against today's profile.
+    await db.mobilityStateSnapshot.delete({ where: { id: snap.id } })
+
+    const result = await replayStrategy(record.id)
+    expect(result.status).toBe('STATE_UNAVAILABLE')
+    expect(result.storedStrategy).toBeDefined() // historical evidence preserved
+    expect(result.explanation).toContain('deleted')
+    expect(result.differences).toHaveLength(0)
+  })
+
+  // -------------------------------------------------------------------------
+  // 3. INTENT_UNAVAILABLE — referenced intent record missing
+  // -------------------------------------------------------------------------
+  it('replayStrategy — returns INTENT_UNAVAILABLE when the intent record is deleted', async () => {
+    const { record, intentRec } = await adoptForReplay('mobility')
+    // Delete the intent record
+    await db.intentRecord.delete({ where: { id: intentRec.id } })
+
+    const result = await replayStrategy(record.id)
+    expect(result.status).toBe('INTENT_UNAVAILABLE')
+    expect(result.storedStrategy).toBeDefined()
+    expect(result.differences).toHaveLength(0)
+  })
+
+  // -------------------------------------------------------------------------
+  // 4. POLICY_UNAVAILABLE — required policy world cannot be reconstructed
+  //    (Simulated by passing a record with a corrupted asOfDate that the
+  //    resolver can't handle. We test the library-level guard directly.)
+  // -------------------------------------------------------------------------
+  it('replayStrategy — returns POLICY_UNAVAILABLE or OUTPUT_MISMATCH when the policy world cannot be reconstructed', async () => {
+    const { record } = await adoptForReplay('cost')
+    // Move the asOfDate to a date far before any policy snapshot exists.
+    // The resolver will either throw (POLICY_UNAVAILABLE) or produce a
+    // different hash (OUTPUT_MISMATCH). Either is acceptable; what's NOT
+    // acceptable is EXACT_MATCH.
+    await db.decisionRecord.update({
+      where: { id: record.id },
+      data: { asOfDate: new Date('1990-01-01T00:00:00Z') },
+    })
+    // Also corrupt the stored strategy snapshot's asOf to match
+    const stored = record.strategySnapshot as any
+    if (stored.policyContext) {
+      stored.policyContext.asOf = '1990-01-01T00:00:00Z'
+    }
+    await db.decisionRecord.update({
+      where: { id: record.id },
+      data: { strategySnapshot: stored as any },
+    })
+
+    const result = await replayStrategy(record.id)
+    // The resolver may throw on the ancient date → POLICY_UNAVAILABLE
+    // OR it may produce a different hash → OUTPUT_MISMATCH
+    // OR the buildStrategy may fail → REPLAY_FAILED
+    // Either is acceptable; what's NOT acceptable is EXACT_MATCH.
+    expect(['POLICY_UNAVAILABLE', 'OUTPUT_MISMATCH', 'REPLAY_FAILED']).toContain(result.status)
+  })
+
+  // -------------------------------------------------------------------------
+  // 5. ENGINE_CHANGED — persisted engine version differs from current engine
+  // -------------------------------------------------------------------------
+  it('replayStrategy — returns ENGINE_CHANGED when the persisted engine version differs', async () => {
+    const { record } = await adoptForReplay('income')
+    // Simulate the engine having been upgraded: the record was stored with
+    // engine 1.0.0, but we pretend it was 0.9.0 (an older engine).
+    await db.decisionRecord.update({
+      where: { id: record.id },
+      data: { strategyEngineVersion: '0.9.0' },
+    })
+    // Also corrupt the stored strategy snapshot's engine version to match
+    const stored = record.strategySnapshot as any
+    stored.strategyEngineVersion = '0.9.0'
+    await db.decisionRecord.update({
+      where: { id: record.id },
+      data: { strategySnapshot: stored as any },
+    })
+
+    const result = await replayStrategy(record.id)
+    expect(result.status).toBe('ENGINE_CHANGED')
+    expect(result.comparison).toBeDefined()
+    expect(result.comparison!.differences.some((d) => d.dimension === 'strategyEngineVersion')).toBe(true)
+  })
+
+  // -------------------------------------------------------------------------
+  // 6. OUTPUT_MISMATCH — replay succeeds but deterministic output differs
+  //    (Same engine, but policy hash drift → different output)
+  // -------------------------------------------------------------------------
+  it('replayStrategy — returns OUTPUT_MISMATCH when the policy hash drifts (same engine)', async () => {
+    const { record } = await adoptForReplay('entrepreneurship')
+    // Corrupt the stored strategy snapshot's policyContext.runtimeHash so it
+    // differs from what the resolver will produce. This simulates a policy
+    // drift: the stored strategy says hash X, but replaying produces hash Y.
+    const stored = record.strategySnapshot as any
+    stored.policyContext = stored.policyContext ?? {}
+    stored.policyContext.runtimeHash = 'deliberately-wrong-hash-12345'
+    await db.decisionRecord.update({
+      where: { id: record.id },
+      data: {
+        strategySnapshot: stored as any,
+        runtimePolicyHash: 'deliberately-wrong-hash-12345',
+      },
+    })
+
+    const result = await replayStrategy(record.id)
+    // The engine version matches (both are 1.0.0), but the policy hash differs.
+    // This is OUTPUT_MISMATCH, NOT ENGINE_CHANGED.
+    expect(result.status).toBe('OUTPUT_MISMATCH')
+    expect(result.comparison).toBeDefined()
+    expect(result.comparison!.exact).toBe(false)
+    expect(result.comparison!.differences.some((d) => d.dimension === 'policyContext')).toBe(true)
+    // Specifically NOT engine change
+    expect(result.comparison!.differences.some((d) => d.dimension === 'strategyEngineVersion')).toBe(false)
+  })
+
+  // -------------------------------------------------------------------------
+  // 7. PROVENANCE_MISMATCH — snapshot metadata disagrees with record columns
+  // -------------------------------------------------------------------------
+  it('verifyStrategyRecord — detects provenance mismatch between snapshot and record', async () => {
+    const { record } = await adoptForReplay('residence')
+    // Corrupt the stored strategy snapshot's mobilityStateVersion so it
+    // disagrees with the record's stateVersion column.
+    const stored = record.strategySnapshot as any
+    stored.mobilityStateVersion = 999
+    await db.decisionRecord.update({
+      where: { id: record.id },
+      data: { strategySnapshot: stored as any },
+    })
+
+    const verification = await verifyStrategyRecord(record.id)
+    expect(verification.valid).toBe(false)
+    expect(verification.checks.provenanceMatches).toBe(false)
+    expect(verification.errors.some((e) => e.includes('mobilityStateVersion'))).toBe(true)
+  })
+
+  // -------------------------------------------------------------------------
+  // 8. Authorization — user cannot replay another user's strategy
+  // -------------------------------------------------------------------------
+  it('authorization — user cannot replay another user’s strategy', async () => {
+    const ownerUserId = `replay-owner-${Date.now()}`
+    const attackerUserId = `replay-attacker-${Date.now()}`
+    await cleanupTestUser(ownerUserId)
+    await cleanupTestUser(attackerUserId)
+
+    // Owner adopts a strategy
+    const person = await ensurePerson(ownerUserId)
+    const snap = await createMobilitySnapshot(person.id, baseState)
+    const intentRec = await createIntentRecord(person.id, baseIntent)
+    const ctx = await buildCanonicalPlanningContext({
+      state: baseState, intent: baseIntent, asOfDate: '2025-06-01',
+    })
+    const strategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    const record = await adoptStrategy({
+      userId: ownerUserId, personId: person.id, strategy, objectiveId: 'residence',
+      stateSnapshotId: snap.id, stateVersion: snap.version,
+      intentRecordId: intentRec.id, intentVersion: intentRec.version,
+      policyContext: strategy.policyContext!,
+    })
+
+    // Attacker (a different user) tries to replay the owner's record.
+    // The attacker's userId is the Person.userId (a cuid), not the test label.
+    const attackerPerson = await ensurePerson(attackerUserId)
+    const attackerUserIdValue = attackerPerson.userId! // always set by ensurePerson
+    const result = await replayStrategy(record.id, attackerUserIdValue)
+    // Must NOT return EXACT_MATCH or any success — the record doesn't belong
+    // to the attacker. We return REPLAY_FAILED to avoid leaking existence.
+    expect(result.status).toBe('REPLAY_FAILED')
+    expect(result.explanation).toContain('not found')
+
+    // Same for verify
+    const verification = await verifyStrategyRecord(record.id, attackerUserIdValue)
+    expect(verification.valid).toBe(false)
+    expect(verification.checks.recordExists).toBe(false)
+
+    await cleanupTestUser(ownerUserId)
+    await cleanupTestUser(attackerUserId)
+  })
+
+  // -------------------------------------------------------------------------
+  // 9. Historical isolation — current profile changes do NOT alter replay inputs
+  // -------------------------------------------------------------------------
+  it('historical isolation — current profile changes do not alter replay inputs', async () => {
+    const { record, snap, intentRec } = await adoptForReplay('income')
+
+    // Create a NEW snapshot (simulating a profile update) — the user's "current"
+    // profile is now version 2 with different income.
+    const newState = { ...baseState, annualIncomeUSD: { ...baseState.annualIncomeUSD, value: 999999 } }
+    await createMobilitySnapshot(snap.personId, newState)
+
+    // Replay the ORIGINAL record. It must use the ORIGINAL snapshot (version 1),
+    // NOT the new version 2.
+    const result = await replayStrategy(record.id)
+    expect(result.status).toBe('EXACT_MATCH')
+    expect(result.provenance.mobilityStateSnapshotId).toBe(snap.id)
+    expect(result.provenance.mobilityStateVersion).toBe(snap.version)
+    // The replayed strategy's state should have the ORIGINAL income, not 999999
+    expect(result.replayedStrategy!.state.annualIncomeUSD.value).toBe(baseState.annualIncomeUSD.value)
+  })
+
+  // -------------------------------------------------------------------------
+  // 10. Policy isolation — current policy changes do NOT silently rewrite
+  //     historical provenance. The stored strategySnapshot is immutable.
+  // -------------------------------------------------------------------------
+  it('policy isolation — stored strategy snapshot is never mutated by replay', async () => {
+    const { record } = await adoptForReplay('residence')
+    const before = await db.decisionRecord.findUnique({ where: { id: record.id } })
+    const beforeSnapshot = before!.strategySnapshot as any
+
+    // Run replay (which rebuilds the strategy)
+    await replayStrategy(record.id)
+
+    // Run verify (which also rebuilds)
+    await verifyStrategyRecord(record.id)
+
+    // The stored strategySnapshot must be byte-for-byte identical
+    const after = await db.decisionRecord.findUnique({ where: { id: record.id } })
+    const afterSnapshot = after!.strategySnapshot as any
+    expect(JSON.stringify(afterSnapshot)).toBe(JSON.stringify(beforeSnapshot))
+
+    // Other columns must also be unchanged
+    expect(after!.planStatus).toBe(before!.planStatus)
+    expect(after!.strategyEngineVersion).toBe(before!.strategyEngineVersion)
+    expect(after!.runtimePolicyHash).toBe(before!.runtimePolicyHash)
+    expect(after!.mobilityStateSnapshotId).toBe(before!.mobilityStateSnapshotId)
+    expect(after!.intentRecordId).toBe(before!.intentRecordId)
+  })
+
+  // -------------------------------------------------------------------------
+  // 11. Replay determinism — same historical inputs produce identical output
+  // -------------------------------------------------------------------------
+  it('replay determinism — same inputs produce identical deterministic output', async () => {
+    const { record } = await adoptForReplay('citizenship')
+
+    const result1 = await replayStrategy(record.id)
+    const result2 = await replayStrategy(record.id)
+
+    expect(result1.status).toBe(result2.status)
+    expect(result1.comparison!.differences.length).toBe(result2.comparison!.differences.length)
+    // The replayed strategies must be structurally identical across two runs
+    expect(JSON.stringify(result1.replayedStrategy!.bestTrajectory))
+      .toBe(JSON.stringify(result2.replayedStrategy!.bestTrajectory))
+    expect(result1.replayedStrategy!.blockers.length).toBe(result2.replayedStrategy!.blockers.length)
+    expect(result1.replayedStrategy!.actionPlan.actions.length).toBe(result2.replayedStrategy!.actionPlan.actions.length)
+  })
+
+  // -------------------------------------------------------------------------
+  // 12. No mutation — replay/verify never change the persisted record
+  // -------------------------------------------------------------------------
+  it('no mutation — replay and verify never create new records or modify existing ones', async () => {
+    const { record, person } = await adoptForReplay('mobility')
+    const recordsBefore = await db.decisionRecord.count({ where: { personId: person.id } })
+
+    await replayStrategy(record.id)
+    await verifyStrategyRecord(record.id)
+
+    const recordsAfter = await db.decisionRecord.count({ where: { personId: person.id } })
+    expect(recordsAfter).toBe(recordsBefore) // no new records created
+  })
+
+  // -------------------------------------------------------------------------
+  // 13. Verify — valid record passes ALL checks (including replay + output)
+  // -------------------------------------------------------------------------
+  it('verifyStrategyRecord — valid record passes all 8 checks', async () => {
+    const verifyUserId = `verify-all-${Date.now()}`
+    await cleanupTestUser(verifyUserId)
+    const person = await ensurePerson(verifyUserId)
+    const snap = await createMobilitySnapshot(person.id, baseState)
+    const intentRec = await createIntentRecord(person.id, baseIntent)
+    const ctx = await buildCanonicalPlanningContext({
+      state: baseState, intent: baseIntent, asOfDate: '2025-06-01',
+    })
+    const strategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+
+    const record = await adoptStrategy({
+      userId: verifyUserId, personId: person.id, strategy, objectiveId: 'residence',
+      stateSnapshotId: snap.id, stateVersion: snap.version,
+      intentRecordId: intentRec.id, intentVersion: intentRec.version,
+      policyContext: strategy.policyContext!,
+    })
+
+    const verification = await verifyStrategyRecord(record.id)
+    expect(verification.valid).toBe(true)
+    expect(verification.checks.recordExists).toBe(true)
+    expect(verification.checks.stateSnapshotExists).toBe(true)
+    expect(verification.checks.intentRecordExists).toBe(true)
+    expect(verification.checks.provenanceMatches).toBe(true)
+    expect(verification.checks.engineVersionKnown).toBe(true)
+    expect(verification.checks.policyAvailable).toBe(true)
+    expect(verification.checks.replaySucceeded).toBe(true)
+    expect(verification.checks.outputMatches).toBe(true)
+    expect(verification.errors).toHaveLength(0)
+    expect(verification.provenance).not.toBeNull()
+    expect(verification.provenance!.mobilityStateSnapshotId).toBe(snap.id)
+    expect(verification.provenance!.intentRecordId).toBe(intentRec.id)
+    expect(verification.comparison).toBeDefined()
+    expect(verification.comparison!.exact).toBe(true)
+
+    await cleanupTestUser(verifyUserId)
+  })
+
+  // -------------------------------------------------------------------------
+  // 14. compareStrategyReplay — detects a deliberately mutated dimension
+  // -------------------------------------------------------------------------
+  it('compareStrategyReplay — detects a deliberately mutated bestTrajectory', async () => {
+    const { strategy } = await adoptForReplay('cost')
+    const mutated: Strategy = JSON.parse(JSON.stringify(strategy))
+    // Deliberately change the best trajectory id
+    mutated.bestTrajectory = { ...mutated.bestTrajectory, id: 'deliberately-different' }
+
+    const comparison = compareStrategyReplay(strategy, mutated)
+    expect(comparison.exact).toBe(false)
+    expect(comparison.differences.length).toBeGreaterThan(0)
+    expect(comparison.differences.some((d) => d.dimension === 'bestTrajectory' && d.field === 'id')).toBe(true)
+  })
+
+  it('compareStrategyReplay — detects a deliberately mutated blockers count', async () => {
+    const { strategy } = await adoptForReplay('income')
+    const mutated: Strategy = JSON.parse(JSON.stringify(strategy))
+    // Deliberately add a fake blocker
+    mutated.blockers = [...mutated.blockers, { ...mutated.blockers[0], blockerId: 'fake-blocker' }]
+
+    const comparison = compareStrategyReplay(strategy, mutated)
+    expect(comparison.exact).toBe(false)
+    expect(comparison.differences.some((d) => d.dimension === 'blockers')).toBe(true)
+  })
+
+  it('compareStrategyReplay — returns exact for identical strategies', async () => {
+    const { strategy } = await adoptForReplay('residence')
+    // Deep clone — should be exactly equal
+    const clone: Strategy = JSON.parse(JSON.stringify(strategy))
+    // Update only the ephemeral generatedAt (should NOT cause a mismatch)
+    clone.generatedAt = '2099-01-01T00:00:00Z'
+
+    const comparison = compareStrategyReplay(strategy, clone)
+    expect(comparison.exact).toBe(true)
+    expect(comparison.differences).toHaveLength(0)
+  })
+
+  // -------------------------------------------------------------------------
+  // 15. Existing plan replay remains intact (src/lib/policy/replay.ts)
+  // -------------------------------------------------------------------------
+  it('existing plan replay infrastructure remains intact', async () => {
+    // Import the plan replay module — it must still export replayDecision + plansMatch
+    const { replayDecision, plansMatch } = await import('@/lib/policy/replay')
+    expect(typeof replayDecision).toBe('function')
+    expect(typeof plansMatch).toBe('function')
+
+    const plan = await replayDecision({
+      state: baseState,
+      intent: baseIntent,
+      asOfDate: '2025-06-01',
+    })
+    expect(plan).toBeDefined()
+    expect(plan.routes.length).toBeGreaterThan(0)
+
+    // plansMatch against itself should be true
+    const match = plansMatch(plan, plan)
+    expect(match.match).toBe(true)
+    expect(match.differences).toHaveLength(0)
   })
 })
 
