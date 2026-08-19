@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useWayfinder } from '@/components/wayfinder/store'
 import { RouteList } from '@/components/wayfinder/route-list'
 import { RouteDetail } from '@/components/wayfinder/route-detail'
@@ -16,6 +16,8 @@ import { BlockerSection } from '@/components/wayfinder/strategy/blocker-section'
 import { ActionPlanSection } from '@/components/wayfinder/strategy/action-plan-section'
 import { ProfileAnalysisSection } from '@/components/wayfinder/strategy/profile-analysis-section'
 import { IntentFrontierSection } from '@/components/wayfinder/strategy/intent-frontier-section'
+import { PreferenceQuestionCard } from '@/components/wayfinder/strategy/preference-question-card'
+import { StrategyDiffBanner, type StrategyDiff } from '@/components/wayfinder/strategy/strategy-diff-banner'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -44,6 +46,23 @@ export function ResultsDashboard() {
 
   const [savedId, setSavedId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [strategyDiff, setStrategyDiff] = useState<StrategyDiff | null>(null)
+  const [prevStrategyLabel, setPrevStrategyLabel] = useState<string | null>(null)
+
+  // Track strategy changes for the diff banner
+  useEffect(() => {
+    if (strategy?.bestTrajectory) {
+      const currentLabel = strategy.bestTrajectory.label
+      if (prevStrategyLabel && prevStrategyLabel !== currentLabel) {
+        setStrategyDiff({
+          previousLabel: prevStrategyLabel,
+          newLabel: currentLabel,
+          reason: 'Your preferences or profile changed, altering the optimal trajectory.',
+        })
+      }
+      setPrevStrategyLabel(currentLabel)
+    }
+  }, [strategy?.bestTrajectory?.label])
 
   if (!plan || !mobilityState || !intent) {
     return (
@@ -83,6 +102,9 @@ export function ResultsDashboard() {
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
+      {/* ===== STRATEGY DIFF BANNER ===== */}
+      <StrategyDiffBanner diff={strategyDiff} onDismiss={() => setStrategyDiff(null)} />
+
       {/* ===== STRATEGY LAYER (primary experience) ===== */}
       {strategyLoading && (
         <section className="mb-6">
@@ -139,6 +161,13 @@ export function ResultsDashboard() {
           <section className="mb-6">
             <StrategyHero strategy={strategy} />
           </section>
+
+          {/* Preference question — shown right after the hero */}
+          {strategy.preferenceQuestions.length > 0 && (
+            <section className="mb-6">
+              <PreferenceQuestionCard question={strategy.preferenceQuestions[0]} />
+            </section>
+          )}
 
           <section className="mb-6">
             <TrajectoryMap trajectory={strategy.bestTrajectory} />
