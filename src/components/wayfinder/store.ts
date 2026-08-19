@@ -5,6 +5,7 @@ import type { Intent, MobilityPlan, MobilityState, Evidence } from '@/lib/domain
 import { exampleState } from '@/lib/domain/state'
 import type { PlanNarrative } from '@/lib/ai/explanation'
 import type { ScenarioResult, ScenarioSpec } from '@/lib/engine/simulate'
+import type { Strategy } from '@/lib/strategy/types'
 
 type Phase = 'home' | 'intake' | 'computing' | 'results'
 
@@ -17,6 +18,7 @@ interface WayfinderState {
   plan: MobilityPlan | null
   narrative: PlanNarrative | null
   evidence: Evidence[]
+  strategy: Strategy | null
   activeRouteId: string | null
   scenarios: ScenarioResult[]
   error: string | null
@@ -44,6 +46,7 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
   plan: null,
   narrative: null,
   evidence: [],
+  strategy: null,
   activeRouteId: null,
   scenarios: [],
   error: null,
@@ -110,6 +113,18 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
         phase: 'results',
         isComputing: false,
       })
+
+      // Fetch the strategy (intelligence layer) in parallel — non-blocking
+      fetch('/api/strategy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: mobilityState, intent, asOfDate: get().asOfDate ?? undefined }),
+      })
+        .then((r) => r.ok ? r.json() : null)
+        .then((d) => {
+          if (d?.strategy) set({ strategy: d.strategy as Strategy })
+        })
+        .catch(() => { /* strategy is non-blocking — plan still works */ })
     } catch (e) {
       set({ error: 'Could not build your mobility plan.', phase: 'results', isComputing: false })
     }
@@ -149,6 +164,7 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
       plan: null,
       narrative: null,
       evidence: [],
+      strategy: null,
       activeRouteId: null,
       scenarios: [],
       error: null,

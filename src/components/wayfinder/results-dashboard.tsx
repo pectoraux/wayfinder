@@ -10,6 +10,12 @@ import { EnablerList } from '@/components/wayfinder/enabler-list'
 import { ChangeSignal } from '@/components/wayfinder/policy/change-signal'
 import { HistoricalModePicker } from '@/components/wayfinder/policy/historical-mode-picker'
 import { PlanHistory } from '@/components/wayfinder/plan-history'
+import { StrategyHero } from '@/components/wayfinder/strategy/strategy-hero'
+import { TrajectoryMap } from '@/components/wayfinder/strategy/trajectory-map'
+import { BlockerSection } from '@/components/wayfinder/strategy/blocker-section'
+import { ActionPlanSection } from '@/components/wayfinder/strategy/action-plan-section'
+import { ProfileAnalysisSection } from '@/components/wayfinder/strategy/profile-analysis-section'
+import { IntentFrontierSection } from '@/components/wayfinder/strategy/intent-frontier-section'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -26,6 +32,7 @@ export function ResultsDashboard() {
   const plan = useWayfinder((s) => s.plan)
   const narrative = useWayfinder((s) => s.narrative)
   const evidence = useWayfinder((s) => s.evidence)
+  const strategy = useWayfinder((s) => s.strategy)
   const activeRouteId = useWayfinder((s) => s.activeRouteId)
   const setActiveRoute = useWayfinder((s) => s.setActiveRoute)
   const runCounterfactual = useWayfinder((s) => s.runCounterfactual)
@@ -74,6 +81,42 @@ export function ResultsDashboard() {
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
+      {/* ===== STRATEGY LAYER (primary experience) ===== */}
+      {strategy && (
+        <>
+          <section className="mb-6">
+            <StrategyHero strategy={strategy} />
+          </section>
+
+          <section className="mb-6">
+            <TrajectoryMap trajectory={strategy.bestTrajectory} />
+          </section>
+
+          {strategy.blockers.length > 0 && (
+            <section className="mb-6">
+              <BlockerSection blockers={strategy.blockers} />
+            </section>
+          )}
+
+          <section className="mb-6">
+            <ActionPlanSection plan={strategy.actionPlan} blockers={strategy.blockers} />
+          </section>
+
+          <section className="mb-6">
+            <ProfileAnalysisSection analysis={strategy.profileAnalysis} />
+          </section>
+
+          <section className="mb-6">
+            <IntentFrontierSection frontier={strategy.intentFrontier} alternativeIntents={strategy.alternativeIntents} />
+          </section>
+
+          <Separator className="my-6" />
+          <p className="mb-4 text-center text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Detailed route analysis &amp; evidence
+          </p>
+        </>
+      )}
+
       {/* ===== RECOMMENDATION HEADER ===== */}
       <section className="mb-6">
         <Card className="overflow-hidden border-border/60 bg-card/70 wf-panel">
