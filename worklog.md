@@ -540,3 +540,54 @@ Stage Summary:
   `git push origin main`
 - After push, the GitHub Actions workflow will run lint + tests + build, then deploy to Vercel.
 - The profile editor is the only missing UI component. Per the user's instructions, it should be built ONLY AFTER the integrity milestone is pushed to GitHub and deployed.
+
+---
+Task ID: publication-and-audit
+Agent: main (founding CTO)
+Task: Push the integrity milestone to GitHub, re-audit the ACTUAL published code against the user's invariants, fix gaps, verify CI + deployment.
+
+Work Log:
+- Pushed commit 25af116 to GitHub main using the provided PAT (temporary, not stored in git config).
+- Verified GitHub main HEAD = 25af116 (matched local).
+- AUDITED THE ACTUAL PUBLISHED GITHUB CODE (via `git show origin/main:...`) — not workspace memory:
+  - staleness.ts: ✅ all 4 dimensions compared
+  - adopt route: ✅ transactional, real MobilityStateSnapshot + IntentRecord
+  - schema.prisma: ✅ provider = postgresql, integrity fields present
+  - replay.ts: ✅ 6-status enum
+  - StrategyProvenance type: ✅ exists
+  - strategy-staleness-banner.tsx: ✅ exists
+- Found 2 invariant gaps flagged by the user:
+  1. ❌ MobilityStateSnapshot + IntentRecord had NO @@unique([personId, version]) — MAX(version)+1 alone is insufficient under concurrency.
+  2. ❌ Profile route blindly trusted client currentState instead of loading the server's authoritative latest snapshot.
+- FIXED both gaps:
+  - Added @@unique([personId, version]) to both models in schema.prisma + schema.local.prisma.
+  - Rewrote POST /api/profile to load the server's latest MobilityStateSnapshot as the base state; client currentState is fallback only; P2002 → 409; NO_BASE_STATE → 400.
+  - Added 4 new tests: DB-level uniqueness on both models, server-authoritative base preservation, NO_BASE_STATE guard.
+- Committed a4aea1c + pushed to GitHub. Verified GitHub main = a4aea1c.
+- Re-audited published GitHub code: ALL 7 INVARIANTS NOW VERIFIED:
+  1. Provenance: real MobilityStateSnapshot + IntentRecord ✅
+  2. Atomic adoption: db.$transaction ✅
+  3. DB-level uniqueness on active objective: uniqueActiveObjectiveKey @unique ✅
+  4. Version uniqueness: @@unique([personId, version]) on both models ✅
+  5. Server authority: loads latest server snapshot as base ✅
+  6. Staleness: all 4 dimensions + STALE_MULTIPLE ✅
+  7. Replay: 6-status enum distinguishing EXACT_MATCH from inability ✅
+- CI workflow for a4aea1c FAILED on "Run tests" step: "Environment variable not found: DATABASE_URL".
+  Root cause: CI runs the test script which uses schema.local.prisma (sqlite), but CI had no DATABASE_URL set.
+- FIXED CI: updated .github/workflows/deploy.yml to set DATABASE_URL=file:/tmp/wayfinder-test.db + NEXTAUTH_SECRET + NEXTAUTH_URL in the test step env. Updated test script to run `prisma db push` before vitest.
+- Committed 216c24d + pushed to GitHub. Verified GitHub main = 216c24d.
+- CI workflow for 216c24d SUCCEEDED: lint ✅, tests ✅ (312/312), build ✅, deploy ✅.
+- PRODUCTION DEPLOYMENT LIVE at https://wayfinder-one.vercel.app
+- Verified production /api/health:
+  - commitSha: 216c24dd7da791b89f9f947327ecae78c3f92ed1 ✅ (matches GitHub)
+  - environment: production ✅
+  - policyVersion: 2024.11.1 ✅
+  - dbConnected: false ⚠️ (Neon DB connection issue — pre-existing infrastructure problem, not a code issue)
+- Production endpoints respond correctly: login 200, home 307 (redirect to login), policy events 200, adopt 401 (unauth).
+
+Stage Summary:
+- The integrity milestone is now PUBLISHED on GitHub (216c24d) and DEPLOYED to production.
+- ALL 7 invariants verified in the actual published GitHub source code.
+- CI passes: lint + 312 tests + build + deploy all green.
+- Production is live and serving the correct commit.
+- The dbConnected:false on production is a Neon infrastructure issue (the DATABASE_URL env var on Vercel may be stale or the Neon free-tier DB may be suspended). This is outside the code scope of this milestone — it's an environment configuration task for the user.

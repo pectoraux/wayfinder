@@ -14,8 +14,8 @@
     "db:generate:prod": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:reset": "prisma migrate reset",
-    "test": "prisma generate --schema prisma/schema.local.prisma && vitest run",
-    "test:watch": "prisma generate --schema prisma/schema.local.prisma && vitest"
+    "test": "prisma generate --schema prisma/schema.local.prisma && prisma db push --schema prisma/schema.local.prisma --accept-data-loss && vitest run",
+    "test:watch": "prisma generate --schema prisma/schema.local.prisma && prisma db push --schema prisma/schema.local.prisma --accept-data-loss && vitest"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
