@@ -69,6 +69,32 @@ export async function GET(req: Request) {
   // Build a lookup so we can resolve the previous record for each entry.
   const recordMap = new Map(records.map((r) => [r.id, r]))
 
+  // Track previousRecordIds that weren't in the filtered set (may be from
+  // a different objective — the OBJECTIVE_CHANGED case). We'll fetch them
+  // directly so the history can show the cross-objective transition.
+  const missingPrevIds = new Set<string>()
+  for (const r of records) {
+    if (r.previousRecordId && !recordMap.has(r.previousRecordId)) {
+      missingPrevIds.add(r.previousRecordId)
+    }
+  }
+  // Fetch the missing previous records (user-scoped — must belong to this user)
+  if (missingPrevIds.size > 0) {
+    const crossObjectiveRecords = await db.decisionRecord.findMany({
+      where: { id: { in: Array.from(missingPrevIds) }, userId },
+      select: {
+        id: true, createdAt: true, trigger: true, changeReason: true, planStatus: true,
+        stateVersion: true, intentVersion: true, objectiveId: true,
+        runtimePolicyHash: true, runtimePolicyVersion: true, strategyEngineVersion: true,
+        previousRecordId: true, policyPublicationId: true, policyEventId: true,
+        mobilityStateSnapshotId: true, intentRecordId: true, strategySnapshot: true, plan: true,
+      },
+    })
+    for (const r of crossObjectiveRecords) {
+      recordMap.set(r.id, r)
+    }
+  }
+
   // Build the history timeline. Each entry is a StrategyChange describing
   // the transition from previousRecordId → this record.
   const history = records.map((r) => {

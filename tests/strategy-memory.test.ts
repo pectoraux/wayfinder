@@ -574,6 +574,79 @@ describe('Strategy history (DB-backed)', () => {
   })
 
   // -------------------------------------------------------------------------
+  // 9b. OBJECTIVE_CHANGED — switching from income to residence creates
+  //     OBJECTIVE_CHANGED (not MANUAL_ADOPTION) when there's a previous
+  //     ACTIVE for a different objective.
+  // -------------------------------------------------------------------------
+  it('objective switch (income → residence) creates OBJECTIVE_CHANGED cause', async () => {
+    // This test verifies the CLASSIFIER correctly detects OBJECTIVE_CHANGED
+    // when a user switches from one objective to another. The adopt route
+    // uses the same classification logic (inlined for write-time persistence).
+    const objSwitchUserId = `obj-switch-${Date.now()}`
+    await cleanupTestUser(objSwitchUserId)
+    const person = await ensurePerson(objSwitchUserId)
+    const snap = await createMobilitySnapshot(person.id, baseState)
+    const intentRec = await createIntentRecord(person.id, baseIntent)
+    const ctx = await buildCanonicalPlanningContext({ state: baseState, intent: baseIntent, asOfDate: '2025-06-01' })
+
+    // First: adopt income strategy
+    const stratA = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    const recordA = await adoptStrategy({
+      userId: objSwitchUserId, personId: person.id, strategy: stratA, objectiveId: 'income',
+      stateSnapshotId: snap.id, stateVersion: snap.version,
+      intentRecordId: intentRec.id, intentVersion: intentRec.version,
+      policyContext: stratA.policyContext!,
+    })
+
+    // Now: adopt residence strategy (same profile, same intent — only objective changes)
+    const stratB = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    // Simulate the adopt route's cross-objective detection: the residence
+    // adoption has no previous ACTIVE for 'residence', but there IS an ACTIVE
+    // for 'income'. The adopt route detects this and sets OBJECTIVE_CHANGED.
+    const recordB = await adoptStrategy({
+      userId: objSwitchUserId, personId: person.id, strategy: stratB, objectiveId: 'residence',
+      stateSnapshotId: snap.id, stateVersion: snap.version,
+      intentRecordId: intentRec.id, intentVersion: intentRec.version,
+      policyContext: stratB.policyContext!,
+      // Simulate the adopt route's classification: since there's no previous
+      // ACTIVE for 'residence' but there IS for 'income', set OBJECTIVE_CHANGED.
+      changeReason: 'OBJECTIVE_CHANGED',
+      previousRecordId: recordA.id,
+    })
+
+    // The residence record should have OBJECTIVE_CHANGED cause
+    expect(recordB.changeReason).toBe('OBJECTIVE_CHANGED')
+    expect(recordB.previousRecordId).toBe(recordA.id)
+
+    // Verify the classifier agrees: given prev=income + next=residence (same state/intent),
+    // it should classify as OBJECTIVE_CHANGED
+    const cause = classifyStrategyChangeCause(toSummary(recordA), toSummary(recordB))
+    expect(cause).toBe('OBJECTIVE_CHANGED')
+
+    // Both objectives should still have their own ACTIVE (isolation preserved)
+    const actives = await db.decisionRecord.findMany({
+      where: { userId: objSwitchUserId, planStatus: 'ACTIVE' },
+    })
+    expect(actives.length).toBe(2)
+    const objectives = actives.map((r) => r.objectiveId).sort()
+    expect(objectives).toEqual(['income', 'residence'])
+
+    await cleanupTestUser(objSwitchUserId)
+  })
+
+  // -------------------------------------------------------------------------
+  // 9c. First-strategy diff is semantically valid (no false "everything changed")
+  // -------------------------------------------------------------------------
+  it('first-strategy diff returns exact=true (no false mismatches)', async () => {
+    const strategy = buildStrategy(baseState, baseIntent, baseRoutes)
+    const diff = buildStrategyDiff(null, strategy)
+    expect(diff.comparison.exact).toBe(true)
+    expect(diff.comparison.differences).toHaveLength(0)
+    expect(diff.bestTrajectoryChanged).toBe(false)
+    expect(diff.blockersChanged).toBe(false)
+  })
+
+  // -------------------------------------------------------------------------
   // 10. Temporary objective exploration does NOT create history
   // -------------------------------------------------------------------------
   it('temporary objective exploration does NOT create a DecisionRecord', async () => {

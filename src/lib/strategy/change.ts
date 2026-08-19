@@ -195,19 +195,36 @@ export function classifyStrategyChangeCause(
  * Build a structured diff between two strategies. Reuses compareStrategyReplay
  * so there is ONE deterministic comparison code path. Adds convenience flags
  * for the UI.
+ *
+ * FIRST-STRATEGY SEMANTICS: when `previous` is null (the first strategy for
+ * this objective), the diff is NOT a comparison against an empty object —
+ * that would produce misleading "everything changed" differences. Instead,
+ * we return a semantically valid diff that says "this is the initial strategy"
+ * with no differences (the strategy is what it is; there's nothing to compare
+ * against). The UI uses the `cause` (MANUAL_ADOPTION / UNKNOWN) to label this
+ * as the first strategy, not the diff.
  */
 export function buildStrategyDiff(
   previous: Strategy | null,
   next: Strategy,
 ): StrategyDiff {
-  // If there's no previous strategy, every dimension is "new" — we still run
-  // the comparison (against a null stand-in) to produce a diff that shows
-  // what the new strategy contains. compareStrategyReplay handles the
-  // null-bestTrajectory case.
-  const comparison = compareStrategyReplay(
-    previous ?? ({} as Strategy),
-    next,
-  )
+  // First strategy — no previous to compare against. Return an empty diff
+  // (exact=true, no differences) so the UI doesn't show false mismatches.
+  if (!previous) {
+    return {
+      comparison: { exact: true, differences: [] },
+      bestTrajectoryChanged: false,
+      blockersChanged: false,
+      actionPlanChanged: false,
+      policyContextChanged: false,
+      engineChanged: false,
+      profileAnalysisChanged: false,
+      intentFrontierChanged: false,
+    }
+  }
+
+  // Normal case — two strategies to compare. Reuse compareStrategyReplay.
+  const comparison = compareStrategyReplay(previous, next)
 
   const dims = comparison.differences.map((d) => d.dimension)
   return {

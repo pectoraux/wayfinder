@@ -237,29 +237,52 @@ export async function POST(req: Request) {
       // 4. Find the PREVIOUS ACTIVE record for this user + objective BEFORE
       //    superseding it, so we can link previousRecordId + classify the
       //    change cause deterministically (N0.2 Strategy Memory).
-      const previousActive = await tx.decisionRecord.findFirst({
+      const previousActiveForObjective = await tx.decisionRecord.findFirst({
         where: { userId, planStatus: 'ACTIVE', objectiveId: body.objectiveId },
         orderBy: { createdAt: 'desc' },
       })
 
+      // Also find the user's most-recent ACTIVE across ALL objectives, so we
+      // can detect OBJECTIVE_CHANGED (switching from one objective to another).
+      // This does NOT supersede the other objective's ACTIVE — objective
+      // isolation is preserved. It only informs the changeReason classification.
+      const previousActiveAnyObjective = await tx.decisionRecord.findFirst({
+        where: { userId, planStatus: 'ACTIVE' },
+        orderBy: { createdAt: 'desc' },
+      })
+
       // Determine the deterministic change cause by comparing provenance.
-      // This is the SAME logic as classifyStrategyChangeCause, inlined here
-      // so we can persist the cause at write time.
+      // Priority: same-objective changes first, then cross-objective switch.
+      // If the user has an ACTIVE for a DIFFERENT objective and is adopting
+      // a new objective, that's OBJECTIVE_CHANGED (the user switched focus).
       let changeReason: string
-      if (!previousActive) {
-        changeReason = 'MANUAL_ADOPTION'
-      } else if (previousActive.stateVersion !== mobilityStateVersion) {
-        changeReason = 'USER_PROFILE_CHANGED'
-      } else if (previousActive.intentVersion !== intentVersion) {
-        changeReason = 'USER_INTENT_CHANGED'
-      } else if (previousActive.objectiveId !== body.objectiveId) {
+      let previousRecordId: string | null = null
+      if (previousActiveForObjective) {
+        // Same-objective transition — compare provenance fields.
+        previousRecordId = previousActiveForObjective.id
+        if (previousActiveForObjective.stateVersion !== mobilityStateVersion) {
+          changeReason = 'USER_PROFILE_CHANGED'
+        } else if (previousActiveForObjective.intentVersion !== intentVersion) {
+          changeReason = 'USER_INTENT_CHANGED'
+        } else if (previousActiveForObjective.runtimePolicyHash !== (policyContext?.runtimeHash ?? null)) {
+          changeReason = 'POLICY_CHANGED'
+        } else if (previousActiveForObjective.strategyEngineVersion !== strategyEngineVersion) {
+          changeReason = 'ENGINE_CHANGED'
+        } else {
+          changeReason = 'MANUAL_ADOPTION'
+        }
+      } else if (previousActiveAnyObjective && previousActiveAnyObjective.objectiveId !== body.objectiveId) {
+        // No previous ACTIVE for THIS objective, but the user has an ACTIVE for
+        // a DIFFERENT objective. This is an objective switch → OBJECTIVE_CHANGED.
+        // We link to the cross-objective previous record so the history timeline
+        // can show the transition, but we do NOT supersede the other objective's
+        // ACTIVE (objective isolation is preserved).
         changeReason = 'OBJECTIVE_CHANGED'
-      } else if (previousActive.runtimePolicyHash !== (policyContext?.runtimeHash ?? null)) {
-        changeReason = 'POLICY_CHANGED'
-      } else if (previousActive.strategyEngineVersion !== strategyEngineVersion) {
-        changeReason = 'ENGINE_CHANGED'
+        previousRecordId = previousActiveAnyObjective.id
       } else {
+        // First-ever strategy for this user → MANUAL_ADOPTION.
         changeReason = 'MANUAL_ADOPTION'
+        previousRecordId = null
       }
 
       // Mark previous ACTIVE plans for this user + objective as SUPERSEDED.
@@ -325,7 +348,7 @@ export async function POST(req: Request) {
           // N0.2 Strategy Memory: link to the previous record + persist the
           // deterministic change cause so the history timeline can explain
           // WHY this strategy changed.
-          previousRecordId: previousActive?.id ?? null,
+          previousRecordId,
           changeReason,
         },
       })
