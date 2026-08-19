@@ -2,20 +2,22 @@
 // Updates the user's mobility state. Creates a new immutable MobilityStateSnapshot.
 // Returns the new state version + triggers strategy recomputation on the client.
 //
-// CRITICAL INTEGRITY RULES:
+// CRITICAL INTEGRITY RULES (N0.3):
 //   1. SERVER AUTHORITY: the base state is the server's LATEST committed
 //      MobilityStateSnapshot, NOT the client-supplied `currentState`. The
 //      client's `currentState` is only used as a fallback when the server has
-//      no snapshot yet (first-ever profile). This prevents a stale or
-//      malicious client from overwriting the profile with an outdated base
-//      or from clobbering a concurrent edit.
-//   2. VERSION UNIQUENESS: version allocation is `MAX(version)+1` inside a
+//      no snapshot yet (first-ever profile).
+//   2. VALIDATION: updates are validated against the actual domain structure
+//      (validateProfileUpdates). Unknown fields are REJECTED.
+//   3. VERSION UNIQUENESS: version allocation is `MAX(version)+1` inside a
 //      transaction, backed by a DB-level `@@unique([personId, version])`
-//      constraint. Even if two concurrent transactions both read the same
-//      max, only one can commit; the other gets a P2002 and must retry.
-//   3. IMMUTABILITY: snapshots are never mutated — each update creates a new row.
-//   4. PROVENANCE: user-entered facts preserve USER_CONFIRMED provenance. We
-//      never accidentally promote a user edit to OFFICIAL or GOVERNMENT_VERIFIED.
+//      constraint. P2002 → 409.
+//   4. IMMUTABILITY: snapshots are never mutated — each update creates a new row.
+//   5. PROVENANCE: user-entered facts preserve USER_CONFIRMED provenance.
+//   6. STRATEGY RECOMPUTATION: after a profile update, the canonical strategy
+//      is recomputed (via buildCanonicalPlanningContext + buildStrategy) and
+//      persisted as a new DecisionRecord with changeReason=USER_PROFILE_CHANGED.
+//      This is NOT a second strategy engine — it reuses the canonical path.
 //
 // Body: { updates: Partial<MobilityState>, currentState?: MobilityState }
 // The server loads its authoritative latest snapshot, merges the updates into
@@ -25,7 +27,10 @@ import { NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { db } from '@/lib/db'
-import type { MobilityState } from '@/lib/domain/types'
+import { validateProfileUpdates, applyValidatedUpdates } from '@/lib/domain/profile-validation'
+import { buildCanonicalPlanningContext, STRATEGY_ENGINE_VERSION } from '@/lib/strategy/planning-context'
+import { buildStrategy } from '@/lib/strategy'
+import type { MobilityState, Intent } from '@/lib/domain/types'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -37,30 +42,6 @@ interface ProfileUpdateBody {
    *  subsequent updates, the server's latest committed snapshot is the
    *  authoritative base. */
   currentState?: MobilityState
-}
-
-/** Deep-merge updates into the current state, returning a new MobilityState.
- *  Preserves USER_CONFIRMED provenance on UserFact fields — never promotes
- *  a user edit to OFFICIAL or GOVERNMENT_VERIFIED. */
-function applyUpdates(state: MobilityState, updates: Record<string, unknown>): MobilityState {
-  const updated: MobilityState = JSON.parse(JSON.stringify(state))
-
-  for (const [key, value] of Object.entries(updates)) {
-    if (key in updated) {
-      const current = (updated as any)[key]
-      if (current && typeof current === 'object' && 'value' in current) {
-        // UserFact field: update the value, mark as user-confirmed, preserve provenance type
-        current.value = value
-        current.status = 'confirmed_by_user'
-        current.provenance = 'user_edit'
-      } else {
-        ;(updated as any)[key] = value
-      }
-    }
-  }
-
-  updated.capturedAt = new Date().toISOString()
-  return updated
 }
 
 export async function POST(req: Request) {
@@ -77,19 +58,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'updates is required' }, { status: 400 })
     }
 
+    // VALIDATE the updates against the actual domain structure.
+    // Unknown fields are REJECTED here — the client cannot inject arbitrary keys.
+    const validation = validateProfileUpdates(body.updates)
+    if (!validation.valid) {
+      return NextResponse.json(
+        { error: 'Invalid updates', errors: validation.errors },
+        { status: 400 },
+      )
+    }
+
     // SERVER-AUTHORITATIVE + TRANSACTIONAL update.
-    //
-    // The base state is the server's LATEST committed MobilityStateSnapshot.
-    // We do NOT trust the client's `currentState` except as a first-ever
-    // fallback. This prevents a stale client from clobbering a newer server
-    // state, and prevents a malicious client from rewriting history.
-    //
-    // Version allocation is `MAX(version)+1` inside the transaction, backed
-    // by the DB-level `@@unique([personId, version])` constraint. If two
-    // concurrent transactions both read the same max and both try to insert
-    // the same version, one commits and the other gets a P2002 unique-
-    // constraint violation — which we surface as a 409 so the client can
-    // retry.
     const result = await db.$transaction(async (tx) => {
       // Find or create a Person for this user
       let person = await tx.person.findFirst({ where: { userId } })
@@ -104,8 +83,6 @@ export async function POST(req: Request) {
       })
 
       // Determine the base state: server's latest, or the client fallback.
-      // The client fallback is only used when the server has NO snapshot
-      // (first-ever profile for this user).
       let baseState: MobilityState
       let newVersion: number
       if (latest) {
@@ -119,8 +96,8 @@ export async function POST(req: Request) {
         throw new Error('NO_BASE_STATE')
       }
 
-      // Apply the user's updates to the authoritative base state.
-      const updatedState = applyUpdates(baseState, body.updates)
+      // Apply the VALIDATED updates to the authoritative base state.
+      const updatedState = applyValidatedUpdates(baseState, validation.validatedUpdates)
 
       // Create a new immutable MobilityStateSnapshot. The @@unique([personId, version])
       // constraint is the concurrency backstop.
@@ -133,18 +110,120 @@ export async function POST(req: Request) {
         },
       })
 
-      return { snapshot, newVersion, updatedState }
+      return { snapshot, newVersion, updatedState, personId: person.id }
     })
+
+    // After the profile snapshot is persisted, recompute the canonical strategy
+    // and persist it as a new DecisionRecord (if the user has an adopted
+    // strategy). This uses the CANONICAL planning path — no second engine.
+    // We do this OUTSIDE the snapshot transaction to avoid holding the lock
+    // during the (potentially slow) strategy build.
+    let strategyImpact: {
+      recomputed: boolean
+      changeReason: string | null
+      recordId: string | null
+      bestTrajectoryLabel: string | null
+      previousBestTrajectoryLabel: string | null
+    } = {
+      recomputed: false,
+      changeReason: null,
+      recordId: null,
+      bestTrajectoryLabel: null,
+      previousBestTrajectoryLabel: null,
+    }
+
+    try {
+      // Load the user's latest intent
+      const intentRecord = await db.intentRecord.findFirst({
+        where: { personId: result.personId },
+        orderBy: { version: 'desc' },
+      })
+      if (intentRecord) {
+        const intent = intentRecord.intent as unknown as Intent
+
+        // Find the user's previous ACTIVE strategy (any objective) to link
+        const previousActive = await db.decisionRecord.findFirst({
+          where: { userId, planStatus: 'ACTIVE' },
+          orderBy: { createdAt: 'desc' },
+        })
+
+        // Build the canonical planning context (same path as /api/strategy)
+        const ctx = await buildCanonicalPlanningContext({
+          state: result.updatedState,
+          intent,
+          asOfDate: new Date().toISOString(),
+        })
+        const newStrategy = buildStrategy(result.updatedState, intent, ctx.routes, ctx)
+
+        // If there's a previous ACTIVE for the SAME objective, supersede it
+        // and create a new ACTIVE with changeReason=USER_PROFILE_CHANGED.
+        if (previousActive) {
+          const objectiveId = previousActive.objectiveId ?? 'default'
+
+          // Supersede the previous ACTIVE for this objective
+          await db.decisionRecord.updateMany({
+            where: { userId, planStatus: 'ACTIVE', objectiveId },
+            data: { planStatus: 'SUPERSEDED', uniqueActiveObjectiveKey: null },
+          })
+
+          // Create the new ACTIVE record
+          const newRecord = await db.decisionRecord.create({
+            data: {
+              personId: result.personId,
+              userId,
+              stateVersion: result.newVersion,
+              mobilityStateSnapshotId: result.snapshot.id,
+              intentVersion: intentRecord.version,
+              intentRecordId: intentRecord.id,
+              policyVersion: ctx.policyContext.baseSnapshotId,
+              policyHash: ctx.policyContext.runtimeHash,
+              runtimePolicyVersion: ctx.policyContext.runtimeVersionId,
+              runtimePolicyHash: ctx.policyContext.runtimeHash,
+              asOfDate: new Date(ctx.policyContext.asOf),
+              plan: newStrategy as any,
+              trigger: 'edit',
+              planStatus: 'ACTIVE',
+              strategyEngineVersion: STRATEGY_ENGINE_VERSION,
+              objectiveId,
+              objectiveVersion: 1,
+              strategySnapshot: {
+                ...newStrategy,
+                mobilityStateVersion: result.newVersion,
+                mobilityStateSnapshotId: result.snapshot.id,
+                intentVersion: intentRecord.version,
+                intentRecordId: intentRecord.id,
+                objectiveId,
+                objectiveVersion: 1,
+              } as any,
+              uniqueActiveObjectiveKey: `${userId}:${objectiveId}`,
+              previousRecordId: previousActive.id,
+              changeReason: 'USER_PROFILE_CHANGED',
+            },
+          })
+
+          strategyImpact = {
+            recomputed: true,
+            changeReason: 'USER_PROFILE_CHANGED',
+            recordId: newRecord.id,
+            bestTrajectoryLabel: newStrategy.bestTrajectory?.label ?? null,
+            previousBestTrajectoryLabel: (previousActive.strategySnapshot as any)?.bestTrajectory?.label ?? null,
+          }
+        }
+      }
+    } catch (strategyErr) {
+      // Strategy recomputation failure should NOT fail the profile update —
+      // the snapshot is already persisted. Log + continue.
+      console.error('[/api/profile] strategy recomputation failed:', strategyErr)
+    }
 
     return NextResponse.json({
       snapshotId: result.snapshot.id,
       stateVersion: result.newVersion,
       updatedState: result.updatedState,
       source: 'USER_CONFIRMED',
+      strategyImpact,
     })
   } catch (err: any) {
-    // P2002 = unique constraint violation on (personId, version).
-    // A concurrent update won the race; the client should retry.
     if (err?.code === 'P2002') {
       return NextResponse.json(
         { error: 'A concurrent profile update is in progress. Please retry.' },

@@ -16,6 +16,7 @@ import { TrajectoryMap } from '@/components/wayfinder/strategy/trajectory-map'
 import { BlockerSection } from '@/components/wayfinder/strategy/blocker-section'
 import { ActionPlanSection } from '@/components/wayfinder/strategy/action-plan-section'
 import { ProfileAnalysisSection } from '@/components/wayfinder/strategy/profile-analysis-section'
+import { ProfileEditor } from '@/components/wayfinder/profile-editor'
 import { IntentFrontierSection } from '@/components/wayfinder/strategy/intent-frontier-section'
 import { PreferenceQuestionCard } from '@/components/wayfinder/strategy/preference-question-card'
 import { StrategyDiffBanner, type StrategyDiff } from '@/components/wayfinder/strategy/strategy-diff-banner'
@@ -26,7 +27,7 @@ import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import {
   Compass, Crown, Lock, ArrowRight, Sparkles, Lightbulb, FlaskConical,
-  Handshake, ShieldCheck, Save, History, CheckCircle2, AlertTriangle, Scale,
+  Handshake, ShieldCheck, Save, History, CheckCircle2, AlertTriangle, Scale, FileEdit,
 } from 'lucide-react'
 import { POLICY_VERSION } from '@/lib/knowledge/policy-version'
 import { defaultScenarios } from '@/lib/engine/simulate'
@@ -53,6 +54,7 @@ export function ResultsDashboard() {
   const [savedId, setSavedId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [strategyDiff, setStrategyDiff] = useState<StrategyDiff | null>(null)
+  const [profileEditorOpen, setProfileEditorOpen] = useState(false)
   const [prevStrategyLabel, setPrevStrategyLabel] = useState<string | null>(null)
 
   // Track strategy changes for the diff banner
@@ -205,6 +207,17 @@ export function ResultsDashboard() {
           </section>
 
           <section className="mb-6">
+            <div className="mb-2 flex justify-end">
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5 text-xs"
+                onClick={() => setProfileEditorOpen(true)}
+              >
+                <FileEdit className="h-3.5 w-3.5" />
+                Edit profile
+              </Button>
+            </div>
             <ProfileAnalysisSection analysis={strategy.profileAnalysis} />
           </section>
 
@@ -466,6 +479,19 @@ export function ResultsDashboard() {
         Wayfinder v{POLICY_VERSION.version} · Policy curated {new Date(POLICY_VERSION.curatedAt).toLocaleDateString()} ·
         Figures are planning approximations — verify primary sources before action. Not legal advice.
       </p>
+
+      {/* === PROFILE EDITOR (N0.3) === */}
+      {mobilityState && (
+        <ProfileEditor
+          key={`profile-editor-${profileEditorOpen}`}
+          open={profileEditorOpen}
+          onOpenChange={setProfileEditorOpen}
+          currentState={mobilityState}
+          onSaved={(updatedState) => {
+            useWayfinder.setState({ mobilityState: updatedState })
+          }}
+        />
+      )}
     </div>
   )
 }

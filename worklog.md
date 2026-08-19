@@ -795,3 +795,31 @@ Stage Summary:
   ✅ No historical record can be overwritten (tested)
   ✅ Temporary exploration does not pollute history (tested)
   ✅ Tests pass (359/359), lint clean, typecheck clean, build clean
+
+---
+Task ID: N0.2-hardening + N0.3
+Agent: main (lead architect)
+Task: N0.2 post-audit hardening + N0.3 Authoritative Profile Editor.
+
+Work Log:
+- Reconciled: local = GitHub = 6dc9c01. Production = 6dc9c01 (N0.2 deployed, CI success). dbConnected: false (Neon infra issue).
+- N0.2 POST-AUDIT — found and fixed 3 architectural issues:
+  1. OBJECTIVE_CHANGED was unreachable (adopt route filtered previousActive by same objectiveId). Fixed: now queries cross-objective previous ACTIVE.
+  2. First-strategy diff produced false "everything changed" (passed {} as Strategy). Fixed: returns exact=true with no differences.
+  3. History API couldn't resolve cross-objective previousRecordId when filtered by objective. Fixed: fetches missing previous records directly.
+- Audited remaining invariants: changeReason NOT client-forgable (not in AdoptBody), immutability tested, deterministic explanations (no LLM), policy propagation links correct.
+- N0.3 PROFILE EDITOR:
+  - src/lib/domain/profile-validation.ts: server-side validation, unknown fields REJECTED, per-field validators, applyValidatedUpdates preserves USER_CONFIRMED.
+  - src/app/api/profile/route.ts: rewritten — validates, uses server-authoritative snapshot, recomputes strategy via canonical path, persists DecisionRecord with USER_PROFILE_CHANGED.
+  - src/components/wayfinder/profile-editor.tsx: full UI with Identity/Education/Career/Capital/Entrepreneurship/Languages/Family sections + after-save success view with "what changed" + strategy impact.
+  - Wired "Edit profile" button into ResultsDashboard.
+- Tests: 361 → 381 (20 new in profile-editor.test.ts). All pass.
+- Lint clean, typecheck clean, build clean.
+- Committed eb1af92 + pushed to GitHub. GitHub main = eb1af92.
+- CI: lint ✅, tests ✅ (381/381), build ✅. Deploy failed (Vercel rate limit). Production still serves 6dc9c01 (N0.2).
+- Browser-verified locally at 390/768/1440px: ProfileEditor opens with all sections, responsive. VLM confirmed.
+
+Stage Summary:
+- N0.2 Strategy Memory Hardening: COMPLETE (3 architectural fixes applied + tested)
+- N0.3 Profile Editor: COMPLETE (all acceptance criteria met locally + on GitHub)
+- Production Alignment: BLOCKED by Vercel rate limit (production serves N0.2; N0.2-hardening + N0.3 on GitHub but not deployed)
