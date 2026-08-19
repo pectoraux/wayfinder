@@ -6,6 +6,8 @@ import { Badge } from '@/components/ui/badge'
 import { ScoreRadar } from '@/components/wayfinder/score-radar'
 import { RouteMap } from '@/components/wayfinder/route-map'
 import { EvidenceTrail } from '@/components/wayfinder/evidence-trail'
+import { WatchlistButton } from '@/components/wayfinder/watchlist-button'
+import { RouteStability } from '@/components/wayfinder/route-stability'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Clock, DollarSign, ShieldAlert, Unlock, ArrowRightCircle, FileCheck, Network } from 'lucide-react'
 import type { Evidence } from '@/lib/domain/types'
@@ -44,7 +46,7 @@ export function RouteDetail({
             <h3 className="text-base font-semibold">{route.label}</h3>
             <p className="text-xs text-muted-foreground">{route.steps[1]?.description}</p>
           </div>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             <StatusBadge status={elig.status} />
             <Badge variant="outline" className="gap-1 text-[10px] font-normal">
               <Clock className="h-2.5 w-2.5" /> {Math.round(route.totalMonths / 12)}y horizon
@@ -55,12 +57,18 @@ export function RouteDetail({
             {route.paretoOptimal && (
               <Badge className="bg-primary/15 text-[10px] font-medium text-primary">Pareto-optimal</Badge>
             )}
+            <WatchlistButton routeId={route.id} routeLabel={route.label} />
           </div>
         </div>
 
         {/* route map */}
         <div className="mt-4 rounded-xl border border-border/40 bg-background/40 p-3">
           <RouteMap route={route} />
+        </div>
+
+        {/* route stability widget */}
+        <div className="mt-3">
+          <RouteStability routeId={route.id} />
         </div>
       </Card>
 

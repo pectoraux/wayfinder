@@ -135,11 +135,15 @@ model DecisionRecord {
   policyPublicationId String?
   /// The user who owns this plan (for alert generation).
   userId          String?
+  /// Plan lifecycle status: ACTIVE (current), SUPERSEDED (replaced by a newer version), ARCHIVED (user dismissed)
+  planStatus      String   @default("ACTIVE")
   createdAt       DateTime @default(now())
 
   @@index([personId])
   @@index([policyPublicationId])
   @@index([userId])
+  @@index([planStatus])
+  @@index([userId, planStatus])
 }
 
 /// A counterfactual "What if?" simulation: modified state -> recomputed plan.
@@ -347,4 +351,41 @@ model PolicyAlert {
   @@index([userId])
   @@index([read])
   @@index([severity])
+}
+
+/// Durable record tracking the policy propagation process itself. Persists
+/// across crashes, restarts, and timeouts. Supports resumable cursor-based
+/// processing.
+model PolicyPropagation {
+  id              String   @id @default(cuid())
+  publicationId   String
+  /// PENDING | RUNNING | COMPLETE | PARTIAL | FAILED
+  status          String   @default("PENDING")
+  startedAt       DateTime @default(now())
+  completedAt     DateTime?
+
+  /// Total count of affected plans discovered
+  totalAffectedPlans  Int  @default(0)
+  /// How many have been processed (succeeded or failed)
+  processedPlans  Int      @default(0)
+  /// How many were successfully recomputed
+  recomputedPlans Int      @default(0)
+  /// How many alerts were created
+  alertsCreated   Int      @default(0)
+  /// How many individual plan recomputations failed
+  errorCount      Int      @default(0)
+  errorSummary    String?
+
+  /// Cursor for resumable processing: the id of the last processed record
+  lastProcessedRecordId String?
+  lastProcessedAt       DateTime?
+
+  /// Which attempt this is (incremented on resume)
+  attempt         Int      @default(1)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([publicationId])
+  @@index([status])
 }

@@ -811,7 +811,7 @@ export interface PlanDiff {
 // 17. POLICY PROPAGATION (tracks the publication → alert pipeline)
 // ===========================================================================
 
-export type PropagationStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETE' | 'FAILED'
+export type PropagationStatus = 'PENDING' | 'RUNNING' | 'COMPLETE' | 'PARTIAL' | 'FAILED'
 
 export interface PolicyPropagation {
   id: string
@@ -819,22 +819,33 @@ export interface PolicyPropagation {
   status: PropagationStatus
   startedAt: string
   completedAt?: string
-  affectedPlans: number
+  totalAffectedPlans: number
+  processedPlans: number
   recomputedPlans: number
   alertsCreated: number
   failures: number
   errorSummary?: string
+  lastProcessedRecordId?: string
+  lastProcessedAt?: string
+  attempt: number
 }
 
 /** Result of the idempotent processPolicyPublication job. */
 export interface PropagationResult {
+  propagationId: string
   publicationId: string
   status: PropagationStatus
-  affectedPlans: number
+  totalAffectedPlans: number
+  processedPlans: number
   recomputedPlans: number
   alertsCreated: number
   failures: number
   errorSummary?: string
   /** Whether this run actually did work or was a no-op (idempotent skip). */
   wasNoOp: boolean
+  /** Whether there are more records to process (batch wasn't complete). */
+  hasMore: boolean
 }
+
+/** Plan lifecycle status. */
+export type PlanStatus = 'ACTIVE' | 'SUPERSEDED' | 'ARCHIVED'

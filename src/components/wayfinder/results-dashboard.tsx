@@ -9,6 +9,7 @@ import { CounterfactualPanel } from '@/components/wayfinder/counterfactual-panel
 import { EnablerList } from '@/components/wayfinder/enabler-list'
 import { ChangeSignal } from '@/components/wayfinder/policy/change-signal'
 import { HistoricalModePicker } from '@/components/wayfinder/policy/historical-mode-picker'
+import { PlanHistory } from '@/components/wayfinder/plan-history'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -303,6 +304,11 @@ export function ResultsDashboard() {
             </div>
           </div>
         </Card>
+      </section>
+
+      {/* ===== PLAN HISTORY ===== */}
+      <section className="mb-6">
+        <PlanHistory />
       </section>
 
       <Separator className="my-2" />

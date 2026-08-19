@@ -40,6 +40,14 @@ export async function POST(req: Request) {
       personId = person.id
     }
 
+    // Mark previous ACTIVE plans for this user as SUPERSEDED
+    if (userId) {
+      await db.decisionRecord.updateMany({
+        where: { userId, planStatus: 'ACTIVE' },
+        data: { planStatus: 'SUPERSEDED' },
+      })
+    }
+
     const record = await db.decisionRecord.create({
       data: {
         personId,
@@ -53,6 +61,7 @@ export async function POST(req: Request) {
         plan: body.plan as any,
         userId,
         trigger: body.trigger ?? 'intake',
+        planStatus: 'ACTIVE',
         policyPublicationId: body.policyPublicationId ?? null,
         previousRecordId: body.previousRecordId ?? null,
       },

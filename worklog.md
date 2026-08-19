@@ -184,3 +184,28 @@ Stage Summary:
 - No hardcoded snapshot IDs in any production path. No simulationMode=true in any production impact analysis.
 - The runtime resolver is the single source of policy truth: all consumers go through it, it applies overlays to the correct base snapshot's entities, and the hash covers the actual resolved state.
 - Publication propagation is automatic and idempotent: approving a candidate triggers the full pipeline without a second manual call.
+
+---
+Task ID: 5-ui
+Agent: frontend-styling-expert
+Task: Build plan history timeline + plan diff UI components
+
+Work Log:
+- Created plan-history.tsx
+- Created plan-diff-view.tsx
+
+Stage Summary:
+- Both components created and ready for integration
+
+---
+Task ID: 7-8-ui
+Agent: frontend-styling-expert
+Task: Build watchlist button, route stability widget, and watchlist page
+
+Work Log:
+- Created watchlist-button.tsx
+- Created route-stability.tsx
+- Created /watchlist page
+
+Stage Summary:
+- All three UI components created

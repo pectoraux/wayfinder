@@ -134,13 +134,24 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       const { invalidateRuntimePolicyCache } = await import('@/lib/policy/runtime-resolver')
       invalidateRuntimePolicyCache()
 
-      // WIRE: invoke the policy propagation pipeline (idempotent).
-      // This recomputes affected plans + creates alerts automatically.
+      // WIRE: invoke the policy propagation pipeline (durable, resumable).
+      // Processes the first batch; if hasMore, the admin console can resume.
       const { processPolicyPublication } = await import('@/lib/policy/propagation')
       const propagation = await processPolicyPublication(publication.id, {
         candidateFactId: candidate.id,
         adminEmail: session.user?.email ?? 'unknown',
       })
+
+      // If propagation didn't finish in the first batch, trigger the next batch
+      // automatically (up to a safety limit of 5 batches = 250 plans).
+      let finalPropagation = propagation
+      let safetyCount = 0
+      while (finalPropagation.hasMore && safetyCount < 5) {
+        finalPropagation = await processPolicyPublication(publication.id, {
+          candidateFactId: candidate.id,
+        })
+        safetyCount++
+      }
 
       await db.adminAuditRecord.create({
         data: {
@@ -153,16 +164,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
             policyVersionId: publication.policyVersionId,
             hash: publication.contentHash,
             propagation: {
-              status: propagation.status,
-              affectedPlans: propagation.affectedPlans,
-              alertsCreated: propagation.alertsCreated,
+              status: finalPropagation.status,
+              totalAffected: finalPropagation.totalAffectedPlans,
+              processed: finalPropagation.processedPlans,
+              alertsCreated: finalPropagation.alertsCreated,
             },
           }),
           reason: body.reason,
         },
       })
 
-      return NextResponse.json({ candidate: updated, publication, propagation })
+      return NextResponse.json({ candidate: updated, publication, propagation: finalPropagation })
     } catch (e) {
       return NextResponse.json({
         error: 'Candidate approved but publication failed',
