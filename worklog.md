@@ -209,3 +209,29 @@ Work Log:
 
 Stage Summary:
 - All three UI components created
+
+---
+Task ID: 26-28
+Agent: main (founding CTO)
+Task: Make propagation durable + build plan history, watchlist UI, route stability UX, and production-shaped user experience.
+
+Work Log:
+- Inspected the actual repository: propagation ran synchronously in HTTP request with a 200-plan hard cap, no durable record, no resumability. No plan history UI, no watchlist UI, no route stability widget on route detail.
+- DURABLE PROPAGATION: rewrote processPolicyPublication with cursor-based pagination (batchSize=50), a PolicyPropagation DB record with lastProcessedRecordId cursor, resumable from where it left off after crash/timeout/restart. Status: PENDING → RUNNING → COMPLETE/PARTIAL/FAILED. Per-user failure tracking (failures don't stop the batch). Auto-batches up to 5 rounds (250 plans) inline on publication. Admin can resume via POST /api/admin/policy/propagation/[id].
+- PLAN VERSIONING: added planStatus (ACTIVE/SUPERSEDED/ARCHIVED) to DecisionRecord. Saving a new plan marks previous ACTIVE plans as SUPERSEDED. Propagation creates new plan versions with trigger=POLICY_CHANGE, marks old plan SUPERSEDED, new plan ACTIVE. APIs: GET /api/plans/history, GET /api/plans/active, POST /api/plans/active (accept new plan), POST /api/plans/diff (deterministic diff).
+- PLAN HISTORY UI (plan-history.tsx): vertical timeline of plan versions with date, best route, trigger, status. Active plan highlighted. Created by frontend-styling-expert subagent.
+- PLAN DIFF UI (plan-diff-view.tsx): structured before/after comparison (best route, eligibility, scores, cost, timeline, blockers). Created by frontend-styling-expert subagent.
+- WATCHLIST UI: watchlist-button.tsx (watch/unwatch toggle on route detail), /watchlist page (user's watched items grouped by type with unwatch). Created by frontend-styling-expert subagent.
+- ROUTE STABILITY WIDGET (route-stability.tsx): material change count in 24 months + stability label + expandable history + disclaimer. Created by frontend-styling-expert subagent.
+- INTEGRATION: route detail now shows watchlist button + stability widget. Results dashboard shows plan history section.
+- PROPAGATION APIs: GET /api/admin/policy/propagations (list), GET/POST /api/admin/policy/propagation/[id] (status + resume).
+- 27 new tests (163 total): propagation result structure, plan diff (all fields, best route change, score/cost/timeline changes), plan status lifecycle, alert severity + materiality, idempotency key structure, watchlist deduplication, propagation idempotency, route stability.
+- Verification: lint clean, 163/163 tests pass, main flow works (demo user → plan → snapshot 2024-11), watchlist page renders, alerts page renders, route detail shows watchlist button + stability widget + plan history section. Console clean.
+
+Stage Summary:
+- Propagation is now durable, resumable, and idempotent — persists across crashes via PolicyPropagation DB record with cursor-based pagination.
+- Plan history is visible: users see a timeline of their plan versions with active/superseded status.
+- Watchlists are usable from the UI: watch/unwatch buttons on route detail + dedicated /watchlist page.
+- Route stability is visible on route detail: historical change count + stability label + disclaimer.
+- The user experience now demonstrates: "Wayfinder noticed that your route changed" — with plan history, diff, alerts, and actionable alternatives.
+- Vercel auto-deploy webhook appears to have stopped triggering for the latest commits; the code is pushed to GitHub and all features verified locally.
