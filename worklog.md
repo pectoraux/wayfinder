@@ -127,3 +127,34 @@ Stage Summary:
 - The admin console at /admin/policy is the policy operations center: dashboard, review queue, candidate detail, approve/reject workflow, audit trail.
 - Vercel cron is configured for weekly automated monitoring; the job is behind a clean abstraction for future Temporal migration.
 - 93 tests cover all 11 required categories from the spec.
+
+---
+Task ID: 19-22
+Agent: main (founding CTO)
+Task: Build the Runtime Policy Overlay system — close the loop from approved policy changes to runtime route evaluation, plan versioning, user alerts, watchlists, and route stability.
+
+Work Log:
+- Inspected the full codebase: existing policy types had no overlay model, generateRoutes directly read the code knowledge base, DecisionRecord stored a stale POLICY_VERSION, no alert/watchlist APIs, no runtime resolver.
+- PolicyOverlay types: PolicyOverlay, PolicyOverlayChange, RuntimePolicySnapshot, PublicationStatus (DRAFT/PUBLISHED/SUPERSEDED/ROLLED_BACK/INVALIDATED), AlertSeverity (INFO/NOTICE/IMPORTANT/CRITICAL).
+- RuntimePolicyResolver (runtime-resolver.ts): the single source of runtime policy truth. Combines base code knowledge + DB-published overlays. Deterministic, versioned (runtimeVersionId + runtimeHash), cached (overlay-aware cache key), fail-safe (falls back to base if DB unavailable or overlay malformed). resolveRuntimePolicy (async, loads from DB), resolveRuntimePolicySync (sync, base only), rebuildRuntimePolicy (integrity test).
+- Overlay application: applyOverlays immutably applies threshold/program/transition changes to base knowledge without mutating it. Supports amount, reduced_for_shortage, status, durationMonths, conditions, label, effectiveFrom/To fields.
+- PolicyPublication lifecycle: publishPolicyVersion now builds a PolicyOverlay + sets status='PUBLISHED'. The candidates/[id] API persists the overlay JSON + status + invalidates the runtime cache on approval.
+- buildPlanWithRuntimePolicy: async plan builder that uses the resolver. The plan API now uses it, recording runtimePolicyVersion + runtimePolicyHash + activeOverlayIds in the MobilityPlan.
+- DecisionRecord: now stores runtimePolicyVersion, runtimePolicyHash, trigger, policyPublicationId, previousRecordId, userId — for plan versioning and alert linkage.
+- Policy rollback: POST /api/admin/policy/rollback/[id] marks a publication ROLLED_BACK (never deletes), invalidates the cache, creates an audit record. The runtime immediately reverts to base knowledge.
+- Alert generation pipeline (alerts.ts): generateAlertCandidates maps publication → affected plans → impact classification → alert candidates with idempotency keys. Only MATERIAL impacts (ROUTE_DEGRADED/INVALIDATED/NEW_BETTER_ROUTE) produce alerts. severityForImpact maps to INFO/NOTICE/IMPORTANT/CRITICAL.
+- Alert API: GET /api/alerts (list + unreadCount), GET/POST /api/alerts/[id] (detail, mark read, dismiss). Idempotent create via upsert on idempotencyKey (prevents duplicate alerts).
+- Alert center UI: /alerts (list with severity badges, unread count, impact level) + /alerts/[id] (detail with what changed / why it matters / alternatives / recommended action / evidence trail). Alert bell in header with live unread count (polls every 30s).
+- Watchlist API: GET/POST/DELETE /api/watchlist (watch/unwatch/list). Upsert on userId+watchType+watchId.
+- Route stability API: GET /api/route-stability?routeId=... returns material change count in 24 months + stability label + disclaimer (historical, not predictive). Uses DB publications + code snapshot history. Honestly reports "insufficient history" when no data.
+- Prisma: expanded PolicyPublication (status, overlay, rollback fields, jurisdictionId), PolicyAlert (severity, idempotencyKey, whatChanged, whyItMatters, recommendedAction, alternativeRoutes, dismissedAt), DecisionRecord (runtimePolicyVersion, runtimePolicyHash, trigger, policyPublicationId, previousRecordId, userId).
+- 26 new tests (119 total): overlay resolution (base, single, multiple, historical, simulation, cache, rebuild), hashing (deterministic, order-independent, date-sensitive), publication (overlay changes runtime, unapproved rejected, hash changes), alerts (severity mapping, materiality, dedup), overlay application (threshold, program suspend, immutability), fail-safe (fallback, sync variant, malformed skip), plan versioning (runtime version recorded, old plans immutable).
+- Verification: lint clean, 119/119 tests pass, main flow intact (demo user → plan → snapshot 2024-11 via runtime resolver), alert center renders with empty state, alert bell in header with live count. Deployed to Vercel via auto-deploy — all features verified on the live deployment.
+
+Stage Summary:
+- The loop is closed: approved policy changes → DB overlay → runtime resolver → route engine → plan recomputation → alert generation → user notification.
+- The runtime resolver is the single source of policy truth — all consumers (route engine, eligibility, graph, impact) go through it.
+- Fail-safe by design: DB unavailable → base knowledge only; malformed overlay → skipped; unapproved candidate → cannot publish.
+- Plan versioning preserved: old plans remain immutable, new plans record the runtime policy version + hash.
+- Alerts are material-only (no noise), deduplicated (idempotency key), and traceable (every alert links to a publication → candidate → evidence → source).
+- Simulated policy remains impossible to use accidentally in production mode (provenance filter in the resolver).
