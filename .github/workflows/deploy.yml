@@ -39,14 +39,14 @@ jobs:
       - name: Run tests
         run: bun run test
         env:
-          # The test suite uses the local SQLite schema (prisma/schema.local.prisma).
-          # CI has no Neon PostgreSQL available, so we point DATABASE_URL at a
-          # local SQLite file. The test script runs `prisma generate --schema
-          # prisma/schema.local.prisma` + `prisma db push` implicitly via the
-          # test helpers, which create the file if it doesn't exist.
           DATABASE_URL: file:/tmp/wayfinder-test.db
           NEXTAUTH_SECRET: ci-test-secret-not-for-production
           NEXTAUTH_URL: http://localhost:3000
+
+      - name: Regenerate Prisma Client for production (PostgreSQL)
+        run: bun run db:generate:prod
+        env:
+          DATABASE_URL: file:/tmp/wayfinder-test.db
 
       - name: Install Vercel CLI
         run: npm install -g vercel@latest
