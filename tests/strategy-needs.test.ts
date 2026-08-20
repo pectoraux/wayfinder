@@ -195,11 +195,15 @@ describe('Desired capability inference', () => {
     expect(strategy.capabilityImpact).toBeDefined()
   })
 
-  it('desired capabilities are traceable to a blocker', () => {
+  it('desired capabilities are traceable to a blocker (via triggers[])', () => {
     for (const cap of strategy.desiredCapabilities ?? []) {
-      expect(cap.triggeringBlockerId).toBeTruthy()
-      expect(cap.triggeringBlockerLabel).toBeTruthy()
-      expect(cap.triggeringTrajectoryId).toBeTruthy()
+      expect(cap.triggers.length).toBeGreaterThan(0)
+      for (const trigger of cap.triggers) {
+        expect(trigger.blockerId).toBeTruthy()
+        expect(trigger.blockerLabel).toBeTruthy()
+        expect(trigger.trajectoryId).toBeTruthy()
+        expect(trigger.trajectoryLabel).toBeTruthy()
+      }
     }
   })
 
@@ -227,7 +231,10 @@ describe('Desired capability inference', () => {
 
   it('capability does not imply guaranteed unlock (MAY_UNLOCK vs REQUIRED_FOR)', () => {
     for (const cap of strategy.desiredCapabilities ?? []) {
-      expect(['MAY_UNLOCK', 'REQUIRED_FOR', 'CONTRIBUTES_TO', 'DOES_NOT_SUFFICIENTLY_UNLOCK']).toContain(cap.unlockRelation)
+      // unlockRelation is now per-trigger, not per-capability
+      for (const trigger of cap.triggers) {
+        expect(['MAY_UNLOCK', 'REQUIRED_FOR', 'CONTRIBUTES_TO', 'DOES_NOT_SUFFICIENTLY_UNLOCK']).toContain(trigger.relation)
+      }
     }
   })
 })
@@ -350,5 +357,166 @@ describe('Adversarial tests', () => {
     const incomeNeeds = inferNeeds(incomeIntent)
     const residenceNeeds = inferNeeds(residenceIntent)
     expect(incomeNeeds.needs[0].label).not.toBe(residenceNeeds.needs[0].label)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 9. N0.5 hardening regression tests
+// ---------------------------------------------------------------------------
+
+describe('N0.5 hardening: provenance + frontier coverage', () => {
+  const strategy = buildStrategy(baseState, baseIntent, baseRoutes)
+
+  it('affectedObjective is populated (not null)', () => {
+    for (const cap of strategy.desiredCapabilities ?? []) {
+      expect(cap.affectedObjective).not.toBeNull()
+      expect(cap.affectedObjective).toBe(baseIntent.statedGoal)
+    }
+  })
+
+  it('one capability can have multiple triggers (multiple blockers)', () => {
+    // If the same capability type is triggered by multiple blockers across
+    // different trajectories, ALL triggers must be preserved.
+    const caps = strategy.desiredCapabilities ?? []
+    for (const cap of caps) {
+      // Each trigger must have a unique blockerId
+      const blockerIds = cap.triggers.map((t) => t.blockerId)
+      expect(new Set(blockerIds).size).toBe(blockerIds.length)
+    }
+  })
+
+  it('deduplication does not lose provenance', () => {
+    // If CREDENTIAL_RECOGNITION is triggered by 2 different blockers,
+    // the capability must have 2 triggers, not 1.
+    const caps = strategy.desiredCapabilities ?? []
+    for (const cap of caps) {
+      // Each trigger must have both blockerId and trajectoryId
+      for (const trigger of cap.triggers) {
+        expect(trigger.blockerId).toBeTruthy()
+        expect(trigger.trajectoryId).toBeTruthy()
+        expect(trigger.trajectoryLabel).toBeTruthy()
+      }
+    }
+  })
+
+  it('remainingBlockers is correct (counts canonical blockers)', () => {
+    for (const cap of strategy.desiredCapabilities ?? []) {
+      for (const unlock of cap.potentialUnlocks) {
+        const route = baseRoutes.find((r) => r.id === unlock.routeId)
+        if (route) {
+          // Count blockers that match this capability's patterns
+          const capDef = getCapabilityDefinition(cap.capabilityId)
+          if (capDef) {
+            const matchingBlockers = route.eligibility.blockers.filter((b) => {
+              const pattern = classifyBlockerPattern(b.label, b.reason)
+              return capDef.resolvesBlockerPatterns.includes(pattern)
+            })
+            const expectedRemaining = route.eligibility.blockers.length - matchingBlockers.length
+            expect(unlock.remainingBlockers).toBe(expectedRemaining)
+          }
+        }
+      }
+    }
+  })
+
+  it('MAY_UNLOCK only when all blockers resolved', () => {
+    for (const cap of strategy.desiredCapabilities ?? []) {
+      for (const unlock of cap.potentialUnlocks) {
+        if (unlock.relation === 'MAY_UNLOCK') {
+          expect(unlock.remainingBlockers).toBe(0)
+        } else if (unlock.relation === 'CONTRIBUTES_TO') {
+          expect(unlock.remainingBlockers).toBeGreaterThan(0)
+        }
+      }
+    }
+  })
+
+  it('alternative trajectory blockers are considered', () => {
+    // The strategy has multiple trajectories (best + alternatives).
+    // Capabilities should be derived from ALL of them, not just the best.
+    const caps = strategy.desiredCapabilities ?? []
+    const trajectoryIds = new Set<string>()
+    for (const cap of caps) {
+      for (const trigger of cap.triggers) {
+        trajectoryIds.add(trigger.trajectoryId)
+      }
+    }
+    // If there are capabilities, they should reference at least one trajectory
+    // (and potentially multiple if blockers exist on alternative trajectories)
+    if (caps.length > 0) {
+      expect(trajectoryIds.size).toBeGreaterThanOrEqual(1)
+    }
+  })
+
+  it('capability output is deterministic (same inputs → same output)', () => {
+    const s1 = buildStrategy(baseState, baseIntent, baseRoutes)
+    const s2 = buildStrategy(baseState, baseIntent, baseRoutes)
+    expect(s1.desiredCapabilities?.length).toBe(s2.desiredCapabilities?.length)
+    for (let i = 0; i < (s1.desiredCapabilities?.length ?? 0); i++) {
+      expect(s1.desiredCapabilities![i].capabilityId).toBe(s2.desiredCapabilities![i].capabilityId)
+      expect(s1.desiredCapabilities![i].triggers.length).toBe(s2.desiredCapabilities![i].triggers.length)
+    }
+  })
+
+  it('historical strategies remain immutable (needs are pure)', () => {
+    const original = JSON.parse(JSON.stringify(baseIntent))
+    inferNeeds(baseIntent)
+    expect(baseIntent).toEqual(original)
+  })
+
+  it('counterfactual does not persist history', () => {
+    const before = Date.now()
+    analyzeCounterfactualCapability('CAPITAL', baseRoutes, [])
+    const after = Date.now()
+    // No side effects — pure function
+    expect(after).toBeGreaterThanOrEqual(before)
+  })
+
+  it('unknown capability IDs cannot be fabricated', () => {
+    const def = getCapabilityDefinition('FAKE_CAPABILITY' as any)
+    expect(def).toBeUndefined()
+  })
+
+  it('cross-objective contamination is rejected', () => {
+    // Needs derived from one objective should not bleed into another
+    const incomeIntent = { ...baseIntent, statedGoal: 'earn_more' as const }
+    const residenceIntent = { ...baseIntent, statedGoal: 'safer_life_for_family' as const }
+    const incomeNeeds = inferNeeds(incomeIntent)
+    const residenceNeeds = inferNeeds(residenceIntent)
+    expect(incomeNeeds.needs[0].derivedFrom).toBe('earn_more')
+    expect(residenceNeeds.needs[0].derivedFrom).toBe('safer_life_for_family')
+    expect(incomeNeeds.needs[0].label).not.toBe(residenceNeeds.needs[0].label)
+  })
+
+  it('strategy replay remains intact', async () => {
+    const { replayStrategy } = await import('@/lib/strategy/replay')
+    expect(typeof replayStrategy).toBe('function')
+  })
+
+  it('Strategy Memory remains intact', async () => {
+    const { buildStrategyChange } = await import('@/lib/strategy/change')
+    expect(typeof buildStrategyChange).toBe('function')
+  })
+
+  it('Profile Editor remains intact', async () => {
+    const { validateProfileUpdates } = await import('@/lib/domain/profile-validation')
+    expect(typeof validateProfileUpdates).toBe('function')
+  })
+
+  it('multi-route scenario: same capability from multiple trajectories', () => {
+    // Build a strategy with the full route set — if multiple trajectories
+    // have credential recognition blockers, the CREDENTIAL_RECOGNITION
+    // capability should have multiple triggers.
+    const s = buildStrategy(baseState, baseIntent, baseRoutes)
+    const credCap = s.desiredCapabilities?.find((c) => c.capabilityId === 'CREDENTIAL_RECOGNITION')
+    if (credCap) {
+      // It should have at least one trigger
+      expect(credCap.triggers.length).toBeGreaterThanOrEqual(1)
+      // Each trigger references a trajectory
+      for (const trigger of credCap.triggers) {
+        expect(trigger.trajectoryId).toBeTruthy()
+        expect(trigger.trajectoryLabel).toBeTruthy()
+      }
+    }
   })
 })

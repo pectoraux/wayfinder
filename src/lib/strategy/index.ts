@@ -12,7 +12,7 @@ import { buildTrajectories } from './trajectory'
 import { analyzeBlockers } from './blockers'
 import { buildActionPlan } from './actions'
 import { analyzeProfile } from './profile'
-import { inferNeeds, inferDesiredCapabilities, buildCapabilityImpactSummary } from './needs'
+import { inferNeeds, inferDesiredCapabilities, buildCapabilityImpactSummary, type TrajectoryBlockerAssociation } from './needs'
 import { generateRoutes, compositeUtility } from '@/lib/engine/routes'
 import { rankRoutes } from '@/lib/engine/optimize'
 import type { Preference } from '@/lib/domain/types'
@@ -57,7 +57,22 @@ export function buildStrategy(
 
   // 10. N0.5 — Needs + Desired Capability Intelligence
   const needs = inferNeeds(intent)
-  const desiredCapabilities = inferDesiredCapabilities(trajectories, blockers, null, routes)
+  // N0.5 hardening: analyze blockers across ALL meaningful trajectories
+  // (best + alternatives), not just the best one. Each trajectory's source
+  // route is used to run analyzeBlockers.
+  const trajectoryBlockerAssociations: TrajectoryBlockerAssociation[] = []
+  for (const traj of trajectories) {
+    const sourceRoute = routes.find((r) => r.id === traj.sourceRouteId)
+    if (sourceRoute) {
+      const trajBlockers = analyzeBlockers(sourceRoute, state)
+      for (const blocker of trajBlockers) {
+        trajectoryBlockerAssociations.push({ trajectory: traj, blocker })
+      }
+    }
+  }
+  // Use the intent's statedGoal as the objectiveId (canonical objective identifier)
+  const objectiveId = intent.statedGoal
+  const desiredCapabilities = inferDesiredCapabilities(trajectoryBlockerAssociations, objectiveId, routes)
   const capabilityImpact = buildCapabilityImpactSummary(desiredCapabilities, trajectories)
 
   return {

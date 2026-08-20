@@ -1,6 +1,6 @@
 'use client'
 
-// Wayfinder — Needs + Capability Intelligence Section (N0.5)
+// Wayfinder — Needs + Capability Intelligence Section (N0.5 hardened)
 //
 // Shows the user:
 //   - What they want (their stated goal)
@@ -9,14 +9,14 @@
 //   - What capability would remove the blocker
 //   - What routes that capability could unlock
 //
-// Design follows the Apple-level UX standard: calm, minimal, progressive disclosure.
+// N0.5 hardening: shows ALL triggers (multiple trajectories can trigger
+// the same capability), with progressive disclosure.
 
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import {
-  Target, ArrowRight, Lock, Key, TrendingUp, Compass, Sparkles,
-  CheckCircle2, XCircle, User, Users,
+  Target, Key, TrendingUp, Compass, CheckCircle2, User, Users,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { NeedAssessment, DesiredCapability, CapabilityImpactSummary } from '@/lib/strategy/needs'
@@ -54,7 +54,6 @@ export function NeedsCapabilitySection({
       {/* WANT vs NEED */}
       {needs && (
         <div className="mb-3 grid gap-2 sm:grid-cols-2">
-          {/* Want */}
           <div className="rounded-lg border border-border/50 bg-background/40 p-3">
             <p className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
               <Compass className="h-3 w-3" />
@@ -62,7 +61,6 @@ export function NeedsCapabilitySection({
             </p>
             <p className="mt-1 text-sm font-medium">{needs.wants[0]?.expression?.slice(0, 100) ?? needs.wants[0]?.goal ?? '—'}</p>
           </div>
-          {/* Need */}
           <div className="rounded-lg border border-primary/30 bg-primary/[0.03] p-3">
             <p className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-primary">
               <Target className="h-3 w-3" />
@@ -114,9 +112,17 @@ function CapabilityCard({ cap }: { cap: DesiredCapability }) {
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="text-sm font-semibold">{cap.label}</p>
-          <p className="mt-0.5 text-[11px] text-muted-foreground">
-            Blocks: {cap.triggeringBlockerLabel}
-          </p>
+          {/* N0.5 hardening: show ALL triggers, not just the first */}
+          <div className="mt-1 space-y-0.5">
+            {cap.triggers.slice(0, 3).map((trigger, i) => (
+              <p key={i} className="text-[11px] text-muted-foreground">
+                Blocks: {trigger.blockerLabel} ({trigger.trajectoryLabel})
+              </p>
+            ))}
+            {cap.triggers.length > 3 && (
+              <p className="text-[10px] text-muted-foreground">+{cap.triggers.length - 3} more</p>
+            )}
+          </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
           <Badge
