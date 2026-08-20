@@ -145,11 +145,21 @@ export async function POST(req: Request) {
       }
     }
 
-    // Load the user's latest intent (shared across objectives for recomputation)
-    const intentRecord = await db.intentRecord.findFirst({
-      where: { personId: person.id },
-      orderBy: { version: 'desc' },
-    })
+    // === PHASE 2: Compute strategies for ALL active objectives ===
+    // (outside any transaction — strategy computation can be slow)
+    //
+    // CRITICAL INVARIANT (N0.3b): each objective is recomputed using its OWN
+    // historical IntentRecord — NOT the person-wide latest. This preserves
+    // objective isolation. If residence was adopted with intent v4 and
+    // entrepreneurship with intent v2, a profile change recomputes residence
+    // with v4 and entrepreneurship with v2 — never silently substituting v4
+    // for both.
+    //
+    // For each active DecisionRecord:
+    //   1. Resolve its persisted intentRecordId
+    //   2. Load that exact IntentRecord
+    //   3. Recompute using updatedState + that objective's intent
+    //   4. If intentRecordId is missing or the record doesn't exist → FAILED
 
     const recomputationResults: ObjectiveRecomputationResult[] = []
     const recordsToCreate: Array<{
@@ -157,59 +167,82 @@ export async function POST(req: Request) {
       previousRecordId: string
       newStrategy: Strategy
       ctx: Awaited<ReturnType<typeof buildCanonicalPlanningContext>>
+      intentRecordId: string
+      intentVersion: number
     }> = []
 
-    // For each active objective, compute the new strategy
-    if (intentRecord) {
-      const intent = intentRecord.intent as unknown as Intent
-
-      for (const [objectiveId, previousRecord] of activeByObjective) {
-        try {
-          // Build the canonical planning context with the NEW profile state
-          const ctx = await buildCanonicalPlanningContext({
-            state: updatedState,
-            intent,
-            asOfDate: new Date().toISOString(),
-          })
-          const newStrategy = buildStrategy(updatedState, intent, ctx.routes, ctx)
-
-          // Compare against the previous strategy to detect if anything changed
-          const previousStrategy = previousRecord.strategySnapshot as unknown as Strategy | null
-          let isUnchanged = false
-          if (previousStrategy) {
-            const comparison = compareStrategyReplay(previousStrategy, newStrategy)
-            // If the comparison is exact (ignoring the engine version + policy hash
-            // which are expected to be the same), skip creating a new record.
-            // We check exact=true to avoid history noise for identical outputs.
-            if (comparison.exact) {
-              isUnchanged = true
-            }
-          }
-
-          if (isUnchanged) {
-            recomputationResults.push({
-              objectiveId,
-              status: 'unchanged',
-              previousRecordId: previousRecord.id,
-              previousBestTrajectoryLabel: previousStrategy?.bestTrajectory?.label ?? null,
-              bestTrajectoryLabel: newStrategy.bestTrajectory?.label ?? null,
-            })
-          } else {
-            recordsToCreate.push({
-              objectiveId,
-              previousRecordId: previousRecord.id,
-              newStrategy,
-              ctx,
-            })
-          }
-        } catch (err) {
+    for (const [objectiveId, previousRecord] of activeByObjective) {
+      try {
+        // 1. Resolve this objective's persisted intentRecordId
+        const intentRecordId = previousRecord.intentRecordId
+        if (!intentRecordId) {
           recomputationResults.push({
             objectiveId,
             status: 'failed',
             previousRecordId: previousRecord.id,
-            error: err instanceof Error ? err.message : String(err),
+            error: 'No intentRecordId on the previous record — cannot reconstruct the intent lineage for this objective.',
+          })
+          continue
+        }
+
+        // 2. Load that EXACT IntentRecord (not the person-wide latest)
+        const objectiveIntentRecord = await db.intentRecord.findUnique({
+          where: { id: intentRecordId },
+        })
+        if (!objectiveIntentRecord) {
+          recomputationResults.push({
+            objectiveId,
+            status: 'failed',
+            previousRecordId: previousRecord.id,
+            error: `IntentRecord ${intentRecordId} (referenced by this objective) has been deleted. Cannot recompute without the original intent.`,
+          })
+          continue
+        }
+
+        // 3. Recompute using the NEW profile state + THIS objective's intent
+        const intent = objectiveIntentRecord.intent as unknown as Intent
+        const ctx = await buildCanonicalPlanningContext({
+          state: updatedState,
+          intent,
+          asOfDate: new Date().toISOString(),
+        })
+        const newStrategy = buildStrategy(updatedState, intent, ctx.routes, ctx)
+
+        // 4. Compare against the previous strategy to detect if anything changed
+        const previousStrategy = previousRecord.strategySnapshot as unknown as Strategy | null
+        let isUnchanged = false
+        if (previousStrategy) {
+          const comparison = compareStrategyReplay(previousStrategy, newStrategy)
+          if (comparison.exact) {
+            isUnchanged = true
+          }
+        }
+
+        if (isUnchanged) {
+          recomputationResults.push({
+            objectiveId,
+            status: 'unchanged',
+            previousRecordId: previousRecord.id,
+            previousBestTrajectoryLabel: previousStrategy?.bestTrajectory?.label ?? null,
+            bestTrajectoryLabel: newStrategy.bestTrajectory?.label ?? null,
+          })
+        } else {
+          recordsToCreate.push({
+            objectiveId,
+            previousRecordId: previousRecord.id,
+            newStrategy,
+            ctx,
+            intentRecordId: objectiveIntentRecord.id,
+            intentVersion: objectiveIntentRecord.version,
           })
         }
+      } catch (err) {
+        recomputationResults.push({
+          objectiveId,
+          status: 'failed',
+          previousRecordId: previousRecord.id,
+          error: err instanceof Error ? err.message : String(err),
+        })
       }
     }
 
@@ -228,22 +261,23 @@ export async function POST(req: Request) {
 
       // 2. For each objective that needs a new record: supersede old + create new
       const createdRecords: Array<{ objectiveId: string; recordId: string }> = []
-      for (const { objectiveId, previousRecordId, newStrategy, ctx } of recordsToCreate) {
+      for (const { objectiveId, previousRecordId, newStrategy, ctx, intentRecordId, intentVersion } of recordsToCreate) {
         // Supersede the previous ACTIVE for this objective
         await tx.decisionRecord.updateMany({
           where: { userId, planStatus: 'ACTIVE', objectiveId },
           data: { planStatus: 'SUPERSEDED', uniqueActiveObjectiveKey: null },
         })
 
-        // Create the new ACTIVE record
+        // Create the new ACTIVE record — provenance uses THIS objective's
+        // intentRecordId + intentVersion, NOT the person-wide latest.
         const newRecord = await tx.decisionRecord.create({
           data: {
             personId: person!.id,
             userId,
             stateVersion: newVersion,
             mobilityStateSnapshotId: snapshot.id,
-            intentVersion: intentRecord!.version,
-            intentRecordId: intentRecord!.id,
+            intentVersion,
+            intentRecordId,
             policyVersion: ctx.policyContext.baseSnapshotId,
             policyHash: ctx.policyContext.runtimeHash,
             runtimePolicyVersion: ctx.policyContext.runtimeVersionId,
@@ -259,8 +293,8 @@ export async function POST(req: Request) {
               ...newStrategy,
               mobilityStateVersion: newVersion,
               mobilityStateSnapshotId: snapshot.id,
-              intentVersion: intentRecord!.version,
-              intentRecordId: intentRecord!.id,
+              intentVersion,
+              intentRecordId,
               objectiveId,
               objectiveVersion: 1,
             } as any,
