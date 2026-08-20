@@ -59,9 +59,17 @@ export function ProfileEditor({ open, onOpenChange, currentState, onSaved }: Pro
   const [saving, setSaving] = useState<SavingState>('idle')
   const [errors, setErrors] = useState<string[]>([])
   const [impact, setImpact] = useState<{
-    changeReason: string | null
-    bestTrajectoryLabel: string | null
-    previousBestTrajectoryLabel: string | null
+    totalObjectives: number
+    updatedObjectives: number
+    unchangedObjectives: number
+    failedObjectives: number
+    results: Array<{
+      objectiveId: string
+      status: 'updated' | 'unchanged' | 'failed'
+      bestTrajectoryLabel?: string | null
+      previousBestTrajectoryLabel?: string | null
+      error?: string
+    }>
   } | null>(null)
   const [changedFields, setChangedFields] = useState<FieldUpdate[]>([])
 
@@ -126,11 +134,7 @@ export function ProfileEditor({ open, onOpenChange, currentState, onSaved }: Pro
       if (data?.updatedState) {
         onSaved(data.updatedState)
         if (data.strategyImpact) {
-          setImpact({
-            changeReason: data.strategyImpact.changeReason,
-            bestTrajectoryLabel: data.strategyImpact.bestTrajectoryLabel,
-            previousBestTrajectoryLabel: data.strategyImpact.previousBestTrajectoryLabel,
-          })
+          setImpact(data.strategyImpact)
         }
         setChangedFields(changes)
         setSaving('success')
@@ -479,17 +483,33 @@ function SuccessView({
 }: {
   changedFields: FieldUpdate[]
   impact: {
-    changeReason: string | null
-    bestTrajectoryLabel: string | null
-    previousBestTrajectoryLabel: string | null
+    totalObjectives: number
+    updatedObjectives: number
+    unchangedObjectives: number
+    failedObjectives: number
+    results: Array<{
+      objectiveId: string
+      status: 'updated' | 'unchanged' | 'failed'
+      bestTrajectoryLabel?: string | null
+      previousBestTrajectoryLabel?: string | null
+      error?: string
+    }>
   } | null
   onClose: () => void
 }) {
+  const hasFailures = (impact?.failedObjectives ?? 0) > 0
+  const allUnchanged = impact && impact.updatedObjectives === 0 && impact.failedObjectives === 0
+
   return (
     <div className="py-4">
       <div className="flex items-start gap-3">
-        <span className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
-          <CheckCircle2 className="h-5 w-5" />
+        <span className={cn(
+          'flex h-10 w-10 items-center justify-center rounded-full',
+          hasFailures
+            ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+            : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
+        )}>
+          {hasFailures ? <AlertTriangle className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-foreground">Your profile changed</p>
@@ -515,27 +535,71 @@ function SuccessView({
       </div>
 
       {/* Strategy impact */}
-      {impact && impact.changeReason && (
+      {impact && impact.totalObjectives > 0 && (
         <>
           <Separator className="my-4" />
-          <div className="rounded-lg border border-primary/30 bg-primary/5 p-3">
-            <p className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-primary">
+          <div className={cn(
+            'rounded-lg border p-3',
+            hasFailures
+              ? 'border-amber-500/30 bg-amber-500/5'
+              : 'border-primary/30 bg-primary/5',
+          )}>
+            <p className={cn(
+              'flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider',
+              hasFailures ? 'text-amber-700 dark:text-amber-400' : 'text-primary',
+            )}>
               <Sparkles className="h-3 w-3" />
               Strategy impact
             </p>
+
+            {/* Summary line */}
             <p className="mt-1 text-sm font-medium">
-              Your strategy was recomputed because your profile changed.
+              {hasFailures
+                ? `${impact.updatedObjectives} strategy updated. ${impact.failedObjectives} strategy${impact.failedObjectives !== 1 ? 'ies' : ''} could not be recalculated.`
+                : allUnchanged
+                  ? `${impact.totalObjectives} strategy${impact.totalObjectives !== 1 ? 'ies' : ''} evaluated — no change.`
+                  : `${impact.updatedObjectives} strategy${impact.updatedObjectives !== 1 ? 'ies' : ''} recalculated.`}
             </p>
-            {impact.previousBestTrajectoryLabel && impact.bestTrajectoryLabel && (
-              <div className="mt-2 flex items-center gap-2 text-xs">
-                <span className="text-muted-foreground line-through">{impact.previousBestTrajectoryLabel}</span>
-                <ArrowRight className="h-3 w-3 text-primary" />
-                <span className="font-medium text-primary">{impact.bestTrajectoryLabel}</span>
-              </div>
-            )}
-            {impact.previousBestTrajectoryLabel === impact.bestTrajectoryLabel && impact.bestTrajectoryLabel && (
-              <p className="mt-1 text-xs text-muted-foreground">
-                Best trajectory unchanged ({impact.bestTrajectoryLabel}). The ranking may have shifted.
+
+            {/* Per-objective results */}
+            <div className="mt-2 space-y-1.5">
+              {impact.results.map((r) => (
+                <div key={r.objectiveId} className="flex items-center gap-2 text-xs">
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      'text-[9px] font-medium capitalize',
+                      r.status === 'updated' && 'border-primary/30 text-primary',
+                      r.status === 'unchanged' && 'border-muted-foreground/30 text-muted-foreground',
+                      r.status === 'failed' && 'border-destructive/40 text-destructive',
+                    )}
+                  >
+                    {r.objectiveId}
+                  </Badge>
+                  {r.status === 'updated' && r.previousBestTrajectoryLabel && r.bestTrajectoryLabel && (
+                    <>
+                      <span className="text-muted-foreground line-through">{r.previousBestTrajectoryLabel}</span>
+                      <ArrowRight className="h-3 w-3 text-primary" />
+                      <span className="font-medium text-primary">{r.bestTrajectoryLabel}</span>
+                    </>
+                  )}
+                  {r.status === 'updated' && r.previousBestTrajectoryLabel === r.bestTrajectoryLabel && r.bestTrajectoryLabel && (
+                    <span className="text-muted-foreground">Updated ({r.bestTrajectoryLabel})</span>
+                  )}
+                  {r.status === 'unchanged' && (
+                    <span className="text-muted-foreground">No change</span>
+                  )}
+                  {r.status === 'failed' && (
+                    <span className="text-destructive">Failed: {r.error ?? 'unknown error'}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {hasFailures && (
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                Your profile was saved, but Wayfinder could not recompute all strategies.
+                Your previous strategies remain preserved.
               </p>
             )}
           </div>

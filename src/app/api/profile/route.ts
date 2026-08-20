@@ -1,27 +1,31 @@
 // POST /api/profile
 // Updates the user's mobility state. Creates a new immutable MobilityStateSnapshot.
-// Returns the new state version + triggers strategy recomputation on the client.
+// Returns the new state version + triggers strategy recomputation for ALL
+// active objectives.
 //
-// CRITICAL INTEGRITY RULES (N0.3):
+// CRITICAL INTEGRITY RULES (N0.3 hardened):
 //   1. SERVER AUTHORITY: the base state is the server's LATEST committed
-//      MobilityStateSnapshot, NOT the client-supplied `currentState`. The
-//      client's `currentState` is only used as a fallback when the server has
-//      no snapshot yet (first-ever profile).
-//   2. VALIDATION: updates are validated against the actual domain structure
-//      (validateProfileUpdates). Unknown fields are REJECTED.
-//   3. VERSION UNIQUENESS: version allocation is `MAX(version)+1` inside a
-//      transaction, backed by a DB-level `@@unique([personId, version])`
-//      constraint. P2002 → 409.
-//   4. IMMUTABILITY: snapshots are never mutated — each update creates a new row.
-//   5. PROVENANCE: user-entered facts preserve USER_CONFIRMED provenance.
-//   6. STRATEGY RECOMPUTATION: after a profile update, the canonical strategy
-//      is recomputed (via buildCanonicalPlanningContext + buildStrategy) and
-//      persisted as a new DecisionRecord with changeReason=USER_PROFILE_CHANGED.
-//      This is NOT a second strategy engine — it reuses the canonical path.
+//      MobilityStateSnapshot, NOT the client-supplied `currentState`.
+//   2. VALIDATION: updates are validated against the actual domain structure.
+//      Unknown fields are REJECTED.
+//   3. VERSION UNIQUENESS: `MAX(version)+1` inside a transaction, backed by
+//      `@@unique([personId, version])`. P2002 → 409.
+//   4. IMMUTABILITY: snapshots are never mutated.
+//   5. MULTI-OBJECTIVE RECOMPUTATION: ALL active objective strategies are
+//      recomputed, not just one. Each objective is evaluated independently.
+//   6. NO SILENT FAILURE: if strategy recomputation fails for any objective,
+//      the API returns an explicit partial-failure status. The profile
+//      snapshot is still saved (it's immutable), but the response tells the
+//      client exactly which objectives succeeded and which failed.
+//   7. NO HISTORY NOISE: if the recomputed strategy is identical to the
+//      previous (deterministic comparison), no new DecisionRecord is created
+//      for that objective — the existing record stays current.
+//   8. ATOMIC PERSISTENCE: the snapshot + all new DecisionRecords are persisted
+//      in ONE transaction. If any DB write fails, the whole thing rolls back.
+//      Strategy COMPUTATION happens BEFORE the transaction (no DB lock held
+//      during the slow build).
 //
 // Body: { updates: Partial<MobilityState>, currentState?: MobilityState }
-// The server loads its authoritative latest snapshot, merges the updates into
-// that, and persists the result as a new version.
 
 import { NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
@@ -30,18 +34,46 @@ import { db } from '@/lib/db'
 import { validateProfileUpdates, applyValidatedUpdates } from '@/lib/domain/profile-validation'
 import { buildCanonicalPlanningContext, STRATEGY_ENGINE_VERSION } from '@/lib/strategy/planning-context'
 import { buildStrategy } from '@/lib/strategy'
+import { compareStrategyReplay } from '@/lib/strategy/replay'
 import type { MobilityState, Intent } from '@/lib/domain/types'
+import type { Strategy } from '@/lib/strategy/types'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 interface ProfileUpdateBody {
   updates: Record<string, unknown>
-  /** Optional client-side current state. Used ONLY as a fallback when the
-   *  server has no snapshot for this user yet (first-ever profile). For all
-   *  subsequent updates, the server's latest committed snapshot is the
-   *  authoritative base. */
   currentState?: MobilityState
+}
+
+/** Per-objective recomputation result. */
+interface ObjectiveRecomputationResult {
+  objectiveId: string
+  status: 'updated' | 'unchanged' | 'failed'
+  /** The new record id (if status=updated). */
+  recordId?: string
+  /** The previous record id. */
+  previousRecordId?: string
+  /** The new best trajectory label (if status=updated). */
+  bestTrajectoryLabel?: string | null
+  /** The previous best trajectory label. */
+  previousBestTrajectoryLabel?: string | null
+  /** Error message (if status=failed). */
+  error?: string
+}
+
+/** The full strategy impact returned to the client. */
+interface StrategyImpact {
+  /** Total number of active objectives evaluated. */
+  totalObjectives: number
+  /** Number of objectives whose strategy was updated. */
+  updatedObjectives: number
+  /** Number of objectives whose strategy was unchanged (no new record). */
+  unchangedObjectives: number
+  /** Number of objectives whose recomputation failed. */
+  failedObjectives: number
+  /** Per-objective results. */
+  results: ObjectiveRecomputationResult[]
 }
 
 export async function POST(req: Request) {
@@ -59,7 +91,6 @@ export async function POST(req: Request) {
     }
 
     // VALIDATE the updates against the actual domain structure.
-    // Unknown fields are REJECTED here — the client cannot inject arbitrary keys.
     const validation = validateProfileUpdates(body.updates)
     if (!validation.valid) {
       return NextResponse.json(
@@ -68,172 +99,227 @@ export async function POST(req: Request) {
       )
     }
 
-    // SERVER-AUTHORITATIVE + TRANSACTIONAL update.
-    const result = await db.$transaction(async (tx) => {
-      // Find or create a Person for this user
-      let person = await tx.person.findFirst({ where: { userId } })
-      if (!person) {
-        person = await tx.person.create({ data: { userId } })
+    // === PHASE 1: Load server-authoritative state + compute new state ===
+    // (outside any transaction — no DB lock held)
+    let person = await db.person.findFirst({ where: { userId } })
+    if (!person) {
+      person = await db.person.create({ data: { userId } })
+    }
+
+    const latest = await db.mobilityStateSnapshot.findFirst({
+      where: { personId: person.id },
+      orderBy: { version: 'desc' },
+    })
+
+    let baseState: MobilityState
+    let newVersion: number
+    if (latest) {
+      baseState = latest.state as unknown as MobilityState
+      newVersion = latest.version + 1
+    } else if (body.currentState) {
+      baseState = body.currentState
+      newVersion = 1
+    } else {
+      return NextResponse.json(
+        { error: 'No existing profile found and no base state provided.' },
+        { status: 400 },
+      )
+    }
+
+    const updatedState = applyValidatedUpdates(baseState, validation.validatedUpdates)
+
+    // === PHASE 2: Compute strategies for ALL active objectives ===
+    // (outside any transaction — strategy computation can be slow)
+    // Find ALL active objectives — a user can have multiple (residence, income, etc.)
+    const activeRecords = await db.decisionRecord.findMany({
+      where: { userId, planStatus: 'ACTIVE' },
+      orderBy: { createdAt: 'desc' },
+    })
+
+    // Deduplicate by objectiveId — we only need one record per objective
+    const activeByObjective = new Map<string, typeof activeRecords[0]>()
+    for (const record of activeRecords) {
+      const objId = record.objectiveId ?? 'default'
+      if (!activeByObjective.has(objId)) {
+        activeByObjective.set(objId, record)
       }
+    }
 
-      // Load the SERVER-AUTHORITATIVE latest snapshot.
-      const latest = await tx.mobilityStateSnapshot.findFirst({
-        where: { personId: person.id },
-        orderBy: { version: 'desc' },
-      })
+    // Load the user's latest intent (shared across objectives for recomputation)
+    const intentRecord = await db.intentRecord.findFirst({
+      where: { personId: person.id },
+      orderBy: { version: 'desc' },
+    })
 
-      // Determine the base state: server's latest, or the client fallback.
-      let baseState: MobilityState
-      let newVersion: number
-      if (latest) {
-        baseState = latest.state as unknown as MobilityState
-        newVersion = latest.version + 1
-      } else if (body.currentState) {
-        baseState = body.currentState
-        newVersion = 1
-      } else {
-        // No server snapshot AND no client fallback — cannot proceed.
-        throw new Error('NO_BASE_STATE')
+    const recomputationResults: ObjectiveRecomputationResult[] = []
+    const recordsToCreate: Array<{
+      objectiveId: string
+      previousRecordId: string
+      newStrategy: Strategy
+      ctx: Awaited<ReturnType<typeof buildCanonicalPlanningContext>>
+    }> = []
+
+    // For each active objective, compute the new strategy
+    if (intentRecord) {
+      const intent = intentRecord.intent as unknown as Intent
+
+      for (const [objectiveId, previousRecord] of activeByObjective) {
+        try {
+          // Build the canonical planning context with the NEW profile state
+          const ctx = await buildCanonicalPlanningContext({
+            state: updatedState,
+            intent,
+            asOfDate: new Date().toISOString(),
+          })
+          const newStrategy = buildStrategy(updatedState, intent, ctx.routes, ctx)
+
+          // Compare against the previous strategy to detect if anything changed
+          const previousStrategy = previousRecord.strategySnapshot as unknown as Strategy | null
+          let isUnchanged = false
+          if (previousStrategy) {
+            const comparison = compareStrategyReplay(previousStrategy, newStrategy)
+            // If the comparison is exact (ignoring the engine version + policy hash
+            // which are expected to be the same), skip creating a new record.
+            // We check exact=true to avoid history noise for identical outputs.
+            if (comparison.exact) {
+              isUnchanged = true
+            }
+          }
+
+          if (isUnchanged) {
+            recomputationResults.push({
+              objectiveId,
+              status: 'unchanged',
+              previousRecordId: previousRecord.id,
+              previousBestTrajectoryLabel: previousStrategy?.bestTrajectory?.label ?? null,
+              bestTrajectoryLabel: newStrategy.bestTrajectory?.label ?? null,
+            })
+          } else {
+            recordsToCreate.push({
+              objectiveId,
+              previousRecordId: previousRecord.id,
+              newStrategy,
+              ctx,
+            })
+          }
+        } catch (err) {
+          recomputationResults.push({
+            objectiveId,
+            status: 'failed',
+            previousRecordId: previousRecord.id,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
       }
+    }
 
-      // Apply the VALIDATED updates to the authoritative base state.
-      const updatedState = applyValidatedUpdates(baseState, validation.validatedUpdates)
-
-      // Create a new immutable MobilityStateSnapshot. The @@unique([personId, version])
-      // constraint is the concurrency backstop.
+    // === PHASE 3: Atomically persist snapshot + all new DecisionRecords ===
+    // (one transaction — if any DB write fails, the whole thing rolls back)
+    const txResult = await db.$transaction(async (tx) => {
+      // 1. Create the immutable MobilityStateSnapshot
       const snapshot = await tx.mobilityStateSnapshot.create({
         data: {
-          personId: person.id,
+          personId: person!.id,
           version: newVersion,
           state: updatedState as any,
           source: 'USER_CONFIRMED',
         },
       })
 
-      return { snapshot, newVersion, updatedState, personId: person.id }
-    })
-
-    // After the profile snapshot is persisted, recompute the canonical strategy
-    // and persist it as a new DecisionRecord (if the user has an adopted
-    // strategy). This uses the CANONICAL planning path — no second engine.
-    // We do this OUTSIDE the snapshot transaction to avoid holding the lock
-    // during the (potentially slow) strategy build.
-    let strategyImpact: {
-      recomputed: boolean
-      changeReason: string | null
-      recordId: string | null
-      bestTrajectoryLabel: string | null
-      previousBestTrajectoryLabel: string | null
-    } = {
-      recomputed: false,
-      changeReason: null,
-      recordId: null,
-      bestTrajectoryLabel: null,
-      previousBestTrajectoryLabel: null,
-    }
-
-    try {
-      // Load the user's latest intent
-      const intentRecord = await db.intentRecord.findFirst({
-        where: { personId: result.personId },
-        orderBy: { version: 'desc' },
-      })
-      if (intentRecord) {
-        const intent = intentRecord.intent as unknown as Intent
-
-        // Find the user's previous ACTIVE strategy (any objective) to link
-        const previousActive = await db.decisionRecord.findFirst({
-          where: { userId, planStatus: 'ACTIVE' },
-          orderBy: { createdAt: 'desc' },
+      // 2. For each objective that needs a new record: supersede old + create new
+      const createdRecords: Array<{ objectiveId: string; recordId: string }> = []
+      for (const { objectiveId, previousRecordId, newStrategy, ctx } of recordsToCreate) {
+        // Supersede the previous ACTIVE for this objective
+        await tx.decisionRecord.updateMany({
+          where: { userId, planStatus: 'ACTIVE', objectiveId },
+          data: { planStatus: 'SUPERSEDED', uniqueActiveObjectiveKey: null },
         })
 
-        // Build the canonical planning context (same path as /api/strategy)
-        const ctx = await buildCanonicalPlanningContext({
-          state: result.updatedState,
-          intent,
-          asOfDate: new Date().toISOString(),
-        })
-        const newStrategy = buildStrategy(result.updatedState, intent, ctx.routes, ctx)
-
-        // If there's a previous ACTIVE for the SAME objective, supersede it
-        // and create a new ACTIVE with changeReason=USER_PROFILE_CHANGED.
-        if (previousActive) {
-          const objectiveId = previousActive.objectiveId ?? 'default'
-
-          // Supersede the previous ACTIVE for this objective
-          await db.decisionRecord.updateMany({
-            where: { userId, planStatus: 'ACTIVE', objectiveId },
-            data: { planStatus: 'SUPERSEDED', uniqueActiveObjectiveKey: null },
-          })
-
-          // Create the new ACTIVE record
-          const newRecord = await db.decisionRecord.create({
-            data: {
-              personId: result.personId,
-              userId,
-              stateVersion: result.newVersion,
-              mobilityStateSnapshotId: result.snapshot.id,
-              intentVersion: intentRecord.version,
-              intentRecordId: intentRecord.id,
-              policyVersion: ctx.policyContext.baseSnapshotId,
-              policyHash: ctx.policyContext.runtimeHash,
-              runtimePolicyVersion: ctx.policyContext.runtimeVersionId,
-              runtimePolicyHash: ctx.policyContext.runtimeHash,
-              asOfDate: new Date(ctx.policyContext.asOf),
-              plan: newStrategy as any,
-              trigger: 'edit',
-              planStatus: 'ACTIVE',
-              strategyEngineVersion: STRATEGY_ENGINE_VERSION,
+        // Create the new ACTIVE record
+        const newRecord = await tx.decisionRecord.create({
+          data: {
+            personId: person!.id,
+            userId,
+            stateVersion: newVersion,
+            mobilityStateSnapshotId: snapshot.id,
+            intentVersion: intentRecord!.version,
+            intentRecordId: intentRecord!.id,
+            policyVersion: ctx.policyContext.baseSnapshotId,
+            policyHash: ctx.policyContext.runtimeHash,
+            runtimePolicyVersion: ctx.policyContext.runtimeVersionId,
+            runtimePolicyHash: ctx.policyContext.runtimeHash,
+            asOfDate: new Date(ctx.policyContext.asOf),
+            plan: newStrategy as any,
+            trigger: 'edit',
+            planStatus: 'ACTIVE',
+            strategyEngineVersion: STRATEGY_ENGINE_VERSION,
+            objectiveId,
+            objectiveVersion: 1,
+            strategySnapshot: {
+              ...newStrategy,
+              mobilityStateVersion: newVersion,
+              mobilityStateSnapshotId: snapshot.id,
+              intentVersion: intentRecord!.version,
+              intentRecordId: intentRecord!.id,
               objectiveId,
               objectiveVersion: 1,
-              strategySnapshot: {
-                ...newStrategy,
-                mobilityStateVersion: result.newVersion,
-                mobilityStateSnapshotId: result.snapshot.id,
-                intentVersion: intentRecord.version,
-                intentRecordId: intentRecord.id,
-                objectiveId,
-                objectiveVersion: 1,
-              } as any,
-              uniqueActiveObjectiveKey: `${userId}:${objectiveId}`,
-              previousRecordId: previousActive.id,
-              changeReason: 'USER_PROFILE_CHANGED',
-            },
-          })
-
-          strategyImpact = {
-            recomputed: true,
+            } as any,
+            uniqueActiveObjectiveKey: `${userId}:${objectiveId}`,
+            previousRecordId,
             changeReason: 'USER_PROFILE_CHANGED',
-            recordId: newRecord.id,
-            bestTrajectoryLabel: newStrategy.bestTrajectory?.label ?? null,
-            previousBestTrajectoryLabel: (previousActive.strategySnapshot as any)?.bestTrajectory?.label ?? null,
-          }
-        }
+          },
+        })
+
+        createdRecords.push({ objectiveId, recordId: newRecord.id })
       }
-    } catch (strategyErr) {
-      // Strategy recomputation failure should NOT fail the profile update —
-      // the snapshot is already persisted. Log + continue.
-      console.error('[/api/profile] strategy recomputation failed:', strategyErr)
+
+      return { snapshot, createdRecords }
+    })
+
+    // === PHASE 4: Build the response with explicit per-objective status ===
+    const results: ObjectiveRecomputationResult[] = []
+    const recordMap = new Map(txResult.createdRecords.map((r) => [r.objectiveId, r.recordId]))
+
+    for (const { objectiveId, previousRecordId, newStrategy, ctx } of recordsToCreate) {
+      results.push({
+        objectiveId,
+        status: 'updated',
+        recordId: recordMap.get(objectiveId),
+        previousRecordId,
+        bestTrajectoryLabel: newStrategy.bestTrajectory?.label ?? null,
+        previousBestTrajectoryLabel: (activeByObjective.get(objectiveId)?.strategySnapshot as any)?.bestTrajectory?.label ?? null,
+      })
+    }
+    results.push(...recomputationResults.filter((r) => r.status !== 'updated'))
+
+    const strategyImpact: StrategyImpact = {
+      totalObjectives: activeByObjective.size,
+      updatedObjectives: results.filter((r) => r.status === 'updated').length,
+      unchangedObjectives: results.filter((r) => r.status === 'unchanged').length,
+      failedObjectives: results.filter((r) => r.status === 'failed').length,
+      results,
     }
 
+    // Determine the HTTP status:
+    // - 200 if all objectives succeeded (updated or unchanged)
+    // - 207 (Multi-Status) if some objectives failed but the profile was saved
+    // - The profile snapshot is ALWAYS saved (it's immutable) — we never roll
+    //   back the snapshot due to a strategy failure.
+    const hasFailures = strategyImpact.failedObjectives > 0
+    const httpStatus = hasFailures ? 207 : 200
+
     return NextResponse.json({
-      snapshotId: result.snapshot.id,
-      stateVersion: result.newVersion,
-      updatedState: result.updatedState,
+      snapshotId: txResult.snapshot.id,
+      stateVersion: newVersion,
+      updatedState,
       source: 'USER_CONFIRMED',
       strategyImpact,
-    })
+    }, { status: httpStatus })
   } catch (err: any) {
     if (err?.code === 'P2002') {
       return NextResponse.json(
         { error: 'A concurrent profile update is in progress. Please retry.' },
         { status: 409 },
-      )
-    }
-    if (err?.message === 'NO_BASE_STATE') {
-      return NextResponse.json(
-        { error: 'No existing profile found and no base state provided.' },
-        { status: 400 },
       )
     }
     console.error('[/api/profile]', err)

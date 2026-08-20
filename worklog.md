@@ -823,3 +823,36 @@ Stage Summary:
 - N0.2 Strategy Memory Hardening: COMPLETE (3 architectural fixes applied + tested)
 - N0.3 Profile Editor: COMPLETE (all acceptance criteria met locally + on GitHub)
 - Production Alignment: BLOCKED by Vercel rate limit (production serves N0.2; N0.2-hardening + N0.3 on GitHub but not deployed)
+
+---
+Task ID: N0.3-hardening
+Agent: main (lead architect)
+Task: Fix two architectural correctness gaps in the Profile Editor flow.
+
+Work Log:
+- Reconciled: local = GitHub = production = 8ffa386, dbConnected: true.
+- Confirmed BUG 1: strategy recomputation failure was silently caught (lines 213-217 of old profile route). API returned 200 with strategyImpact.recomputed=false, leaving the user with a profile snapshot but no corresponding strategy history.
+- Confirmed BUG 2: profile route used findFirst (one record) — only one objective recomputed even when the user had multiple ACTIVE objectives.
+- REWROTE src/app/api/profile/route.ts with a 4-phase architecture:
+  Phase 1: Load server-authoritative state + compute new state (no transaction)
+  Phase 2: Compute strategies for ALL active objectives (findMany, deduplicate by objectiveId, buildStrategy per objective — outside transaction, no DB lock)
+  Phase 3: Atomically persist snapshot + all new DecisionRecords in ONE transaction (if any DB write fails, whole thing rolls back)
+  Phase 4: Build response with explicit per-objective status (updated/unchanged/failed). 207 if any failed, 200 if all succeeded.
+- ADDED identical-output detection: compareStrategyReplay checks if the new strategy is exact-match identical to the previous. If so, NO new DecisionRecord is created for that objective (no history noise).
+- UPDATED ProfileEditor UI SuccessView to show multi-objective recomputation status: SUCCESS ('N strategies recalculated'), PARTIAL ('1 updated. 1 could not be recalculated.'), FAILURE ('Your profile was saved, but Wayfinder could not recompute...'). Per-objective result badges with trajectory change indicators.
+- WROTE 5 new tests (381 → 386):
+  1. profile change evaluates ALL active objectives independently
+  2. objective histories remain isolated after multi-objective recomputation
+  3. identical strategy output does not create unnecessary history
+  4. previous strategies remain replayable after multi-objective recomputation
+  5. regression: two ACTIVE objectives (residence + entrepreneurship) are both evaluated
+- Ran lint (clean) + typecheck (clean) + build (clean) + tests (386/386).
+- Committed eb5054b + pushed to GitHub. GitHub main = eb5054b.
+- CI: lint ✅, tests ✅ (386/386), build ✅. Deploy step showed failure (Vercel CLI rate limit) BUT Vercel deployed the prebuilt artifact successfully.
+- PRODUCTION VERIFIED: /api/health reports commitSha=eb5054b (matches GitHub + local), dbConnected=true, environment=production.
+
+Stage Summary:
+- N0.3 hardening is COMPLETE. Both bugs fixed:
+  1. No more silent strategy failure — explicit per-objective status, 207 on partial failure.
+  2. All active objectives recomputed independently — findMany + deduplicate.
+- Production is aligned: local = GitHub = production = eb5054b.
