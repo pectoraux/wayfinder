@@ -12,6 +12,7 @@ import { buildTrajectories } from './trajectory'
 import { analyzeBlockers } from './blockers'
 import { buildActionPlan } from './actions'
 import { analyzeProfile } from './profile'
+import { inferNeeds, inferDesiredCapabilities, buildCapabilityImpactSummary } from './needs'
 import { generateRoutes, compositeUtility } from '@/lib/engine/routes'
 import { rankRoutes } from '@/lib/engine/optimize'
 import type { Preference } from '@/lib/domain/types'
@@ -54,6 +55,11 @@ export function buildStrategy(
   // 9. Strategy explanation
   const explanation = buildExplanation(bestTrajectory, blockers, profileAnalysis, intent)
 
+  // 10. N0.5 — Needs + Desired Capability Intelligence
+  const needs = inferNeeds(intent)
+  const desiredCapabilities = inferDesiredCapabilities(trajectories, blockers, null, routes)
+  const capabilityImpact = buildCapabilityImpactSummary(desiredCapabilities, trajectories)
+
   return {
     state,
     intent,
@@ -79,6 +85,9 @@ export function buildStrategy(
       simulationMode: context.policyContext.simulationMode,
     } : undefined,
     strategyEngineVersion: STRATEGY_ENGINE_VERSION,
+    needs,
+    desiredCapabilities,
+    capabilityImpact,
   }
 }
 

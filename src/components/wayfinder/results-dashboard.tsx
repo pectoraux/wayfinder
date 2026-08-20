@@ -18,6 +18,7 @@ import { ActionPlanSection } from '@/components/wayfinder/strategy/action-plan-s
 import { ProfileAnalysisSection } from '@/components/wayfinder/strategy/profile-analysis-section'
 import { ProfileEditor } from '@/components/wayfinder/profile-editor'
 import { IntentFrontierSection } from '@/components/wayfinder/strategy/intent-frontier-section'
+import { NeedsCapabilitySection } from '@/components/wayfinder/strategy/needs-capability-section'
 import { PreferenceQuestionCard } from '@/components/wayfinder/strategy/preference-question-card'
 import { StrategyDiffBanner, type StrategyDiff } from '@/components/wayfinder/strategy/strategy-diff-banner'
 import { StrategyStalenessBanner } from '@/components/wayfinder/strategy/strategy-staleness-banner'
@@ -224,6 +225,17 @@ export function ResultsDashboard() {
           <section className="mb-6">
             <IntentFrontierSection frontier={strategy.intentFrontier} alternativeIntents={strategy.alternativeIntents} />
           </section>
+
+          {/* N0.5 — Needs + Desired Capability Intelligence */}
+          {strategy.needs && (
+            <section className="mb-6">
+              <NeedsCapabilitySection
+                needs={strategy.needs}
+                desiredCapabilities={strategy.desiredCapabilities ?? []}
+                capabilityImpact={strategy.capabilityImpact ?? null}
+              />
+            </section>
+          )}
 
           <Separator className="my-6" />
           <p className="mb-4 text-center text-[11px] font-medium uppercase tracking-wider text-muted-foreground">

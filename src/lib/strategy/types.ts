@@ -334,4 +334,14 @@ export interface Strategy {
   objectiveId?: string
   /** The objective version (immutable objective/intention record version). */
   objectiveVersion?: number
+
+  // -------------------------------------------------------------------------
+  // N0.5 — Needs + Desired Capability Intelligence
+  // -------------------------------------------------------------------------
+  /** The inferred needs assessment (WANT vs NEED vs OBJECTIVE). */
+  needs?: import('./needs').NeedAssessment
+  /** Desired capabilities derived from blocked trajectories. */
+  desiredCapabilities?: import('./needs').DesiredCapability[]
+  /** Summary of capability impact across all routes. */
+  capabilityImpact?: import('./needs').CapabilityImpactSummary
 }
