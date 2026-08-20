@@ -1,36 +1,44 @@
 // POST /api/strategy/[id]/outcome
-// Records the observed outcome of a strategy as a whole.
+// Records an IMMUTABLE observed outcome event for a strategy.
 //
-// Stores predicted values (immutable — from the original strategy) alongside
-// actual observed values. The prediction is NEVER overwritten by reality.
+// N0.4b ARCHITECTURAL INVARIANTS:
+//   1. PREDICTIONS ARE SERVER-DERIVED: the client submits ONLY actual
+//      observations. The server resolves the DecisionRecord → strategy
+//      snapshot → best trajectory, and derives the prediction from that
+//      frozen historical data.
+//   2. EXACT DECISION RECORD OWNERSHIP: the DecisionRecord ID comes from
+//      the URL path, and ownership is verified before any write.
+//   3. OUTCOME EVENTS ARE IMMUTABLE: each submission creates a NEW event.
+//      Idempotency is based on a client-provided eventId.
+//   4. PROVENANCE IS SERVER-CONTROLLED: client submissions are always
+//      USER_REPORTED.
 //
-// Idempotency: uses an idempotency key derived from (userId, decisionRecordId)
-// to prevent duplicate outcomes from browser retries.
-//
-// Security: authenticated + user-scoped. The DecisionRecord must belong to
-// the requesting user.
+// Body: { strategyFollowed?, objectiveAchieved?, trajectoryBecameViable?,
+//         actualTrajectoryViable?, actualTimelineMonths?, actualTotalCostUSD?,
+//         notes?, eventId? }
 
 import { NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { db } from '@/lib/db'
 import { evaluateStrategyOutcome } from '@/lib/strategy/evaluation'
+import { deriveStrategyPrediction } from '@/lib/strategy/prediction'
+import type { Strategy } from '@/lib/strategy/types'
+import { createHash } from 'crypto'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 interface StrategyOutcomeBody {
+  // ONLY actual observations + status accepted from the client
   strategyFollowed?: string
   objectiveAchieved?: string
   trajectoryBecameViable?: string
-  predictedTrajectoryViable?: boolean
   actualTrajectoryViable?: boolean
-  predictedTimelineMonths?: number
   actualTimelineMonths?: number
-  predictedTotalCostUSD?: number
   actualTotalCostUSD?: number
-  provenance?: string
   notes?: string
+  eventId?: string
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -46,7 +54,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   try {
     const body = (await req.json()) as StrategyOutcomeBody
 
-    // Verify the DecisionRecord belongs to this user
+    // 1. Verify the DecisionRecord belongs to this user
     const record = await db.decisionRecord.findFirst({
       where: { id: decisionRecordId, userId },
     })
@@ -54,17 +62,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       return NextResponse.json({ error: 'Record not found' }, { status: 404 })
     }
 
-    // Idempotency key: (userId, decisionRecordId) — one outcome per strategy.
-    const idempotencyKey = `${userId}:${decisionRecordId}:strategy-outcome`
+    // 2. Derive predictions SERVER-SIDE from the historical strategy snapshot
+    const strategy = record.strategySnapshot as unknown as Strategy | null
+    const prediction = deriveStrategyPrediction(strategy, decisionRecordId)
 
-    // Validate provenance
-    const validProvenances = ['USER_REPORTED', 'SYSTEM_DERIVED', 'EXTERNALLY_VERIFIED']
-    const provenance = body.provenance ?? 'USER_REPORTED'
-    if (!validProvenances.includes(provenance)) {
-      return NextResponse.json({ error: `Invalid provenance: ${provenance}` }, { status: 400 })
-    }
-
-    // Validate enums
+    // 3. Validate enums
     const validFollowed = ['UNKNOWN', 'FOLLOWED', 'PARTIALLY_FOLLOWED', 'ABANDONED']
     const validAchieved = ['UNKNOWN', 'ACHIEVED', 'PARTIALLY_ACHIEVED', 'NOT_ACHIEVED', 'SUPERSEDED']
     const validViable = ['UNKNOWN', 'YES', 'NO']
@@ -83,35 +85,49 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       return NextResponse.json({ error: `Invalid trajectoryBecameViable: ${trajectoryBecameViable}` }, { status: 400 })
     }
 
-    const outcome = await db.strategyOutcome.upsert({
+    // 4. Idempotency: client-provided eventId, or derived from body
+    const eventId = body.eventId ?? deriveEventId(userId, decisionRecordId, body)
+    const idempotencyKey = `${userId}:${decisionRecordId}:${eventId}`
+
+    // 5. Check for existing event (idempotent retry)
+    const existing = await db.strategyOutcome.findUnique({
       where: { idempotencyKey },
-      create: {
+    })
+    if (existing) {
+      const evaluation = evaluateStrategyOutcome({
+        predictedTrajectoryViable: existing.predictedTrajectoryViable,
+        actualTrajectoryViable: existing.actualTrajectoryViable,
+        predictedTimelineMonths: existing.predictedTimelineMonths,
+        actualTimelineMonths: existing.actualTimelineMonths,
+        predictedTotalCostUSD: existing.predictedTotalCostUSD,
+        actualTotalCostUSD: existing.actualTotalCostUSD,
+        strategyFollowed: existing.strategyFollowed,
+      })
+      return NextResponse.json({ outcome: existing, evaluation, idempotent: true })
+    }
+
+    // 6. Create a NEW immutable outcome event.
+    //    Provenance is ALWAYS USER_REPORTED for client submissions.
+    const outcome = await db.strategyOutcome.create({
+      data: {
         userId,
         decisionRecordId,
         objectiveId: record.objectiveId,
+        // Actual observations — client-submitted
         strategyFollowed,
         objectiveAchieved,
         trajectoryBecameViable,
-        predictedTrajectoryViable: body.predictedTrajectoryViable ?? null,
         actualTrajectoryViable: body.actualTrajectoryViable ?? null,
-        predictedTimelineMonths: body.predictedTimelineMonths ?? null,
         actualTimelineMonths: body.actualTimelineMonths ?? null,
-        predictedTotalCostUSD: body.predictedTotalCostUSD ?? null,
         actualTotalCostUSD: body.actualTotalCostUSD ?? null,
-        provenance,
+        // Predictions — server-derived from historical strategy, immutable
+        predictedTrajectoryViable: prediction.predictedTrajectoryViable,
+        predictedTimelineMonths: prediction.predictedTimelineMonths,
+        predictedTotalCostUSD: prediction.predictedTotalCostUSD,
+        // Provenance — server-controlled
+        provenance: 'USER_REPORTED',
         notes: body.notes ?? null,
         idempotencyKey,
-      },
-      update: {
-        // Only update ACTUAL values + status — never overwrite predictions
-        strategyFollowed,
-        objectiveAchieved,
-        trajectoryBecameViable,
-        actualTrajectoryViable: body.actualTrajectoryViable ?? undefined,
-        actualTimelineMonths: body.actualTimelineMonths ?? undefined,
-        actualTotalCostUSD: body.actualTotalCostUSD ?? undefined,
-        provenance,
-        notes: body.notes ?? undefined,
       },
     })
 
@@ -125,42 +141,62 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       strategyFollowed: outcome.strategyFollowed,
     })
 
-    return NextResponse.json({ outcome, evaluation }, { status: 201 })
+    return NextResponse.json({ outcome, evaluation, idempotent: false }, { status: 201 })
   } catch (err) {
     console.error('[/api/strategy/[id]/outcome]', err)
     return NextResponse.json({ error: 'Failed to record outcome' }, { status: 500 })
   }
 }
 
-// GET — returns the outcome for a specific strategy (if any)
+// GET — returns ALL outcome events for a specific strategy
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await getServerSession(authOptions)
   if (!session?.user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   const userId = (session.user as any).id
-  if (!userId) return NextResponse.json({ outcome: null })
+  if (!userId) return NextResponse.json({ outcomes: [] })
 
   const { id: decisionRecordId } = await params
-  const idempotencyKey = `${userId}:${decisionRecordId}:strategy-outcome`
 
-  const outcome = await db.strategyOutcome.findUnique({
-    where: { idempotencyKey },
+  // Verify ownership
+  const record = await db.decisionRecord.findFirst({
+    where: { id: decisionRecordId, userId },
   })
-
-  if (!outcome) {
-    return NextResponse.json({ outcome: null, evaluation: null })
+  if (!record) {
+    return NextResponse.json({ error: 'Record not found' }, { status: 404 })
   }
 
-  const evaluation = evaluateStrategyOutcome({
-    predictedTrajectoryViable: outcome.predictedTrajectoryViable,
-    actualTrajectoryViable: outcome.actualTrajectoryViable,
-    predictedTimelineMonths: outcome.predictedTimelineMonths,
-    actualTimelineMonths: outcome.actualTimelineMonths,
-    predictedTotalCostUSD: outcome.predictedTotalCostUSD,
-    actualTotalCostUSD: outcome.actualTotalCostUSD,
-    strategyFollowed: outcome.strategyFollowed,
+  const outcomes = await db.strategyOutcome.findMany({
+    where: { decisionRecordId },
+    orderBy: { createdAt: 'desc' },
   })
 
-  return NextResponse.json({ outcome, evaluation })
+  const latest = outcomes[0]
+  const evaluation = latest
+    ? evaluateStrategyOutcome({
+        predictedTrajectoryViable: latest.predictedTrajectoryViable,
+        actualTrajectoryViable: latest.actualTrajectoryViable,
+        predictedTimelineMonths: latest.predictedTimelineMonths,
+        actualTimelineMonths: latest.actualTimelineMonths,
+        predictedTotalCostUSD: latest.predictedTotalCostUSD,
+        actualTotalCostUSD: latest.actualTotalCostUSD,
+        strategyFollowed: latest.strategyFollowed,
+      })
+    : null
+
+  return NextResponse.json({ outcomes, evaluation })
+}
+
+function deriveEventId(userId: string, decisionRecordId: string, body: StrategyOutcomeBody): string {
+  const payload = JSON.stringify({
+    strategyFollowed: body.strategyFollowed ?? null,
+    objectiveAchieved: body.objectiveAchieved ?? null,
+    trajectoryBecameViable: body.trajectoryBecameViable ?? null,
+    actualTrajectoryViable: body.actualTrajectoryViable ?? null,
+    actualTimelineMonths: body.actualTimelineMonths ?? null,
+    actualTotalCostUSD: body.actualTotalCostUSD ?? null,
+    notes: body.notes ?? null,
+  })
+  return createHash('sha256').update(`${userId}:${decisionRecordId}:${payload}`).digest('hex').slice(0, 16)
 }

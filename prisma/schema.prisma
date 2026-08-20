@@ -510,12 +510,17 @@ model UserAction {
   blockedReason String?
   strategyEngineVersion String?
   runtimePolicyHash String?
+  /// The DecisionRecord that generated this action's prediction. Links each
+  /// action to the exact historical strategy that predicted its effect.
+  /// N0.4b: required for server-derived prediction provenance.
+  decisionRecordId String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   @@unique([userId, actionId])
   @@index([userId])
   @@index([status])
+  @@index([decisionRecordId])
 }
 
 // ---------------------------------------------------------------------------

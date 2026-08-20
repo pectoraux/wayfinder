@@ -40,10 +40,11 @@ export async function POST(req: Request) {
 
   try {
     const body = await req.json()
-    const { actionPlan, strategyEngineVersion, runtimePolicyHash } = body as {
+    const { actionPlan, strategyEngineVersion, runtimePolicyHash, decisionRecordId } = body as {
       actionPlan: ActionPlan
       strategyEngineVersion?: string
       runtimePolicyHash?: string
+      decisionRecordId?: string
     }
 
     if (!actionPlan?.actions) {
@@ -51,7 +52,7 @@ export async function POST(req: Request) {
     }
 
     // Upsert each action (create if doesn't exist, don't overwrite status if already exists)
-    const results = []
+    const results: Awaited<ReturnType<typeof db.userAction.findUnique>>[] = []
     for (const action of actionPlan.actions) {
       const existing = await db.userAction.findUnique({
         where: { userId_actionId: { userId, actionId: action.id } },
@@ -67,12 +68,25 @@ export async function POST(req: Request) {
             status: 'NOT_STARTED',
             strategyEngineVersion: strategyEngineVersion ?? null,
             runtimePolicyHash: runtimePolicyHash ?? null,
+            // N0.4b: link this action to the exact DecisionRecord that
+            // generated its prediction. This is how the server derives
+            // prediction provenance for outcome tracking.
+            decisionRecordId: decisionRecordId ?? null,
           },
         })
         results.push(created)
       } else {
-        // Update title/description but preserve status
-        results.push(existing)
+        // Update title/description but preserve status + decisionRecordId
+        // if the existing action already has one (don't overwrite provenance)
+        if (!existing.decisionRecordId && decisionRecordId) {
+          const updated = await db.userAction.update({
+            where: { id: existing.id },
+            data: { decisionRecordId },
+          })
+          results.push(updated)
+        } else {
+          results.push(existing)
+        }
       }
     }
 

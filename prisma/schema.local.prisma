@@ -494,12 +494,14 @@ model UserAction {
   blockedReason String?
   strategyEngineVersion String?
   runtimePolicyHash String?
+  decisionRecordId String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   @@unique([userId, actionId])
   @@index([userId])
   @@index([status])
+  @@index([decisionRecordId])
 }
 
 

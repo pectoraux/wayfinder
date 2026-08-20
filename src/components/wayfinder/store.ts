@@ -218,7 +218,7 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
   },
 
   syncActions: async () => {
-    const { strategy } = get()
+    const { strategy, activeRecordId } = get()
     if (!strategy?.actionPlan) return
     try {
       await fetch('/api/actions', {
@@ -228,6 +228,9 @@ export const useWayfinder = create<WayfinderState>((set, get) => ({
           actionPlan: strategy.actionPlan,
           strategyEngineVersion: strategy.strategyEngineVersion,
           runtimePolicyHash: strategy.policyContext?.runtimeHash,
+          // N0.4b: link actions to the exact DecisionRecord that generated
+          // their prediction, so outcome tracking can derive provenance.
+          decisionRecordId: activeRecordId ?? undefined,
         }),
       })
     } catch { /* non-blocking */ }
