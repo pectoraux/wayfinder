@@ -57,6 +57,17 @@ jobs:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
+      - name: Apply production database schema (additive, no data loss)
+        run: |
+          # Extract DATABASE_URL from the Vercel-pulled env file
+          export DATABASE_URL=$(grep '^DATABASE_URL=' .vercel/.env.production.local | cut -d'=' -f2- | tr -d '"')
+          export DIRECT_DATABASE_URL=$(grep '^DIRECT_DATABASE_URL=' .vercel/.env.production.local | cut -d'=' -f2- | tr -d '"' || true)
+          echo "DATABASE_URL length: ${#DATABASE_URL}"
+          npx prisma db push --accept-data-loss
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
       - name: Build
         run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
         env:
