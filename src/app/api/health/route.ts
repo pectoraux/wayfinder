@@ -15,11 +15,14 @@ export const dynamic = 'force-dynamic'
 export async function GET() {
   const snapshot = getCurrentPolicySnapshot()
 
-  // Lightweight DB connectivity check
+  // Lightweight DB connectivity check — uses a model count rather than
+  // $queryRaw because raw SQL syntax can vary between providers (SQLite vs
+  // PostgreSQL) and some Neon pooled connections have issues with raw queries.
   let dbConnected: boolean | null = null
   try {
     const { db } = await import('@/lib/db')
-    await db.$queryRaw`SELECT 1`
+    // Use a lightweight model query — this works reliably across SQLite + PostgreSQL
+    await db.user.count({ take: 1 })
     dbConnected = true
   } catch {
     dbConnected = false

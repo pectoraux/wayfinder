@@ -517,3 +517,133 @@ model UserAction {
   @@index([userId])
   @@index([status])
 }
+
+// ---------------------------------------------------------------------------
+// N0.4 — STRATEGY FEEDBACK + OUTCOME TRACKING
+// ---------------------------------------------------------------------------
+
+/// User feedback on a specific historical strategy recommendation. Immutable —
+/// each feedback event is a separate record. A user can submit multiple
+/// feedback events over time for the same DecisionRecord.
+///
+/// Feedback is the user's subjective assessment of the strategy's quality.
+/// It is NOT a factual claim about the outside world — it's the user's
+/// perception of how useful/accurate the recommendation was.
+model StrategyFeedback {
+  id              String   @id @default(cuid())
+  userId          String
+  /// The exact DecisionRecord this feedback describes. Must belong to this user.
+  decisionRecordId String
+  /// Overall usefulness (1-5 scale, or null if not rated).
+  usefulness      Int?
+  /// Did the strategy's assumptions hold? (1-5 or null)
+  assumptionAccuracy Int?
+  /// Was the explanation accurate? (1-5 or null)
+  explanationAccuracy Int?
+  /// Were the blockers correctly identified? (1-5 or null)
+  blockerAccuracy Int?
+  /// Was the confidence assessment appropriate? (1-5 or null)
+  confidenceAssessment Int?
+  /// Free-text feedback (optional).
+  freeText        String?
+  createdAt       DateTime @default(now())
+
+  @@index([userId])
+  @@index([decisionRecordId])
+  @@index([createdAt])
+}
+
+/// The observed outcome of a specific user action. Separate from UserAction
+/// because one action can have multiple outcomes (attempts, retries) and
+/// completion ≠ success.
+///
+/// Stores the PREDICTED values (immutable — from the original strategy) and
+/// the ACTUAL observed values (added separately when reality is known).
+model ActionOutcome {
+  id              String   @id @default(cuid())
+  userId          String
+  /// The exact UserAction this outcome describes. Must belong to this user.
+  userActionId    String
+  /// The DecisionRecord that contained the prediction. Links to the exact
+  /// strategy that predicted the action's effect.
+  decisionRecordId String?
+  /// The predicted effect (from the original strategy, immutable).
+  predictedEffect String?
+  /// The actual observed effect.
+  actualEffect    String?
+  /// Predicted duration in months (from the original strategy).
+  predictedDurationMonths Float?
+  /// Actual duration in months.
+  actualDurationMonths     Float?
+  /// Predicted cost in USD (from the original strategy).
+  predictedCostUSD Float?
+  /// Actual cost in USD.
+  actualCostUSD    Float?
+  /// Whether the predicted blocker was resolved.
+  predictedBlockerResolved Boolean?
+  /// Whether the blocker was actually resolved.
+  actualBlockerResolved    Boolean?
+  /// The outcome status.
+  status          String   @default("UNKNOWN") // UNKNOWN | OBSERVED | CONFIRMED | USER_REPORTED | EXTERNALLY_VERIFIED | FAILED
+  /// Provenance: who/what reported this outcome.
+  provenance      String   @default("USER_REPORTED") // USER_REPORTED | SYSTEM_DERIVED | EXTERNALLY_VERIFIED
+  /// Free-text notes from the user.
+  notes           String?
+  /// Idempotency key to prevent duplicate outcomes from retries.
+  idempotencyKey  String   @unique
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId])
+  @@index([userActionId])
+  @@index([decisionRecordId])
+  @@index([status])
+  @@index([provenance])
+}
+
+/// The observed outcome of a strategy as a whole. A strategy can be followed
+/// without fully completing every action — this captures the trajectory-level
+/// result.
+///
+/// Like ActionOutcome, stores the predicted trajectory state (immutable) and
+/// the actual observed state separately.
+model StrategyOutcome {
+  id              String   @id @default(cuid())
+  userId          String
+  /// The exact DecisionRecord this outcome describes. Must belong to this user.
+  decisionRecordId String
+  /// The objective this strategy was for.
+  objectiveId     String?
+  /// Whether the strategy was followed.
+  strategyFollowed String  @default("UNKNOWN") // UNKNOWN | FOLLOWED | PARTIALLY_FOLLOWED | ABANDONED
+  /// Whether the objective was achieved.
+  objectiveAchieved String @default("UNKNOWN") // UNKNOWN | ACHIEVED | PARTIALLY_ACHIEVED | NOT_ACHIEVED | SUPERSEDED
+  /// Whether the trajectory became viable.
+  trajectoryBecameViable String @default("UNKNOWN") // UNKNOWN | YES | NO
+  /// Predicted trajectory viability (from the original strategy, immutable).
+  predictedTrajectoryViable Boolean?
+  /// Actual trajectory viability (observed).
+  actualTrajectoryViable    Boolean?
+  /// Predicted timeline to destination (months).
+  predictedTimelineMonths   Float?
+  /// Actual timeline to destination (months).
+  actualTimelineMonths      Float?
+  /// Predicted total cost (USD).
+  predictedTotalCostUSD     Float?
+  /// Actual total cost (USD).
+  actualTotalCostUSD        Float?
+  /// Provenance: who/what reported this outcome.
+  provenance      String   @default("USER_REPORTED") // USER_REPORTED | SYSTEM_DERIVED | EXTERNALLY_VERIFIED
+  /// Free-text notes.
+  notes           String?
+  /// Idempotency key to prevent duplicate outcomes from retries.
+  idempotencyKey  String   @unique
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId])
+  @@index([decisionRecordId])
+  @@index([objectiveId])
+  @@index([strategyFollowed])
+  @@index([provenance])
+}

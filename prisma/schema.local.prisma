@@ -501,3 +501,76 @@ model UserAction {
   @@index([userId])
   @@index([status])
 }
+
+
+// ---------------------------------------------------------------------------
+// N0.4 — STRATEGY FEEDBACK + OUTCOME TRACKING (mirrors schema.prisma)
+// ---------------------------------------------------------------------------
+
+model StrategyFeedback {
+  id              String   @id @default(cuid())
+  userId          String
+  decisionRecordId String
+  usefulness      Int?
+  assumptionAccuracy Int?
+  explanationAccuracy Int?
+  blockerAccuracy Int?
+  confidenceAssessment Int?
+  freeText        String?
+  createdAt       DateTime @default(now())
+  @@index([userId])
+  @@index([decisionRecordId])
+  @@index([createdAt])
+}
+
+model ActionOutcome {
+  id              String   @id @default(cuid())
+  userId          String
+  userActionId    String
+  decisionRecordId String?
+  predictedEffect String?
+  actualEffect    String?
+  predictedDurationMonths Float?
+  actualDurationMonths     Float?
+  predictedCostUSD Float?
+  actualCostUSD    Float?
+  predictedBlockerResolved Boolean?
+  actualBlockerResolved    Boolean?
+  status          String   @default("UNKNOWN")
+  provenance      String   @default("USER_REPORTED")
+  notes           String?
+  idempotencyKey  String   @unique
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  @@index([userId])
+  @@index([userActionId])
+  @@index([decisionRecordId])
+  @@index([status])
+  @@index([provenance])
+}
+
+model StrategyOutcome {
+  id              String   @id @default(cuid())
+  userId          String
+  decisionRecordId String
+  objectiveId     String?
+  strategyFollowed String  @default("UNKNOWN")
+  objectiveAchieved String @default("UNKNOWN")
+  trajectoryBecameViable String @default("UNKNOWN")
+  predictedTrajectoryViable Boolean?
+  actualTrajectoryViable    Boolean?
+  predictedTimelineMonths   Float?
+  actualTimelineMonths      Float?
+  predictedTotalCostUSD     Float?
+  actualTotalCostUSD        Float?
+  provenance      String   @default("USER_REPORTED")
+  notes           String?
+  idempotencyKey  String   @unique
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  @@index([userId])
+  @@index([decisionRecordId])
+  @@index([objectiveId])
+  @@index([strategyFollowed])
+  @@index([provenance])
+}
