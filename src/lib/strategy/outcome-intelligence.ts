@@ -349,98 +349,103 @@ export function deriveOutcomeTypeFromStrategy(strategy: Strategy): OutcomeType {
 }
 
 // ---------------------------------------------------------------------------
-// Graph-based Outcome Type Derivation — AUTHORITATIVE, not text-based
+// Graph-based Outcome Type Derivation — AUTHORITATIVE, never text-based
 // ---------------------------------------------------------------------------
 //
-// The canonical source of causal meaning is the DecisionGraph and its
-// explicit nodes/edges. Text pattern-matching is NOT authoritative — a
-// deterministic heuristic is still a heuristic.
+// BLOCKER 1 FIX: The previous implementation used label.includes() and
+// description.includes() to classify outcomes (e.g., "citizenship" →
+// CITIZENSHIP_GRANTED). That is text-based semantic inference — a graph
+// node being selected does not make its label-based interpretation
+// authoritative.
 //
-// Where the graph provides the relationship, the graph wins. If a semantic
-// outcome cannot be established from authoritative graph/domain data, we
-// represent it as UNKNOWN rather than fabricate precision.
+// The ONLY authoritative machine-readable metadata on a DecisionNode is:
+//   - node.type (OBJECTIVE, NEED, BLOCKER, CAPABILITY, ACTION, OUTCOME, ...)
+//   - node.provenance.source (the module that produced the node)
+//   - node.provenance.references (specific field references)
+//
+// None of these contain an explicit OutcomeType. Therefore:
+//   - We map provenance.source to a COARSE OutcomeType only where the
+//     mapping is semantically exact (e.g., 'DesiredCapability.potentialUnlocks'
+//     → CAPABILITY_ACQUIRED — a capability unlock IS a capability acquired).
+//   - We return UNKNOWN for any source that does not have an exact mapping.
+//   - We NEVER read node.label or node.description for classification.
+//
+// Test B invariant: changing only label/description/display text must NOT
+// change the derived OutcomeType. This is now structurally enforced —
+// those fields are never read by the derivation.
+
+/**
+ * The authoritative mapping from a graph node's provenance.source to an
+ * OutcomeType. This mapping is EXACT — it only includes cases where the
+ * source semantics directly imply the OutcomeType.
+ *
+ * Sources NOT in this map produce UNKNOWN. We do NOT invent semantic
+ * precision by reading display text.
+ */
+const PROVENANCE_SOURCE_TO_OUTCOME_TYPE: Record<string, OutcomeType> = {
+  // A capability potential-unlock outcome means a capability would be
+  // acquired. This is an exact semantic match.
+  'DesiredCapability.potentialUnlocks': 'CAPABILITY_ACQUIRED',
+  // NOTE: 'Strategy.bestTrajectory' does NOT have an exact mapping to a
+  // specific OutcomeType (CITIZENSHIP_GRANTED vs RESIDENCE_GRANTED vs
+  // ROUTE_UNLOCKED). The graph does not contain authoritative metadata
+  // to distinguish these. We return UNKNOWN rather than guessing from
+  // the trajectory label.
+}
 
 /**
  * Derive the OutcomeType for an action from the historical DecisionGraph.
- * This is the AUTHORITATIVE derivation — it uses the graph's explicit
- * nodes + edges, not text pattern-matching.
- *
- * The graph contains:
- *   ACTION →(LEADS_TO)→ OUTCOME
- *
- * We look at the OUTCOME node the action leads to, and derive the outcome
- * type from the outcome node's properties (label, description, provenance).
+ * AUTHORITATIVE — uses ONLY the graph's explicit nodes/edges and the
+ * outcome node's provenance.source. NEVER reads label/description text.
  *
  * Returns UNKNOWN if:
  *   - The graph is null
  *   - The action node doesn't exist in the graph
- *   - No LEADS_TO edge from the action
- *   - The outcome type cannot be established from the graph
+ *   - No LEADS_TO edge from the action to an OUTCOME node
+ *   - The outcome node's provenance.source has no exact mapping
  */
 export function deriveOutcomeTypeFromGraph(
   graph: DecisionGraph,
   actionId: string,
 ): OutcomeType {
-  // The action node ID in the graph is `action-${hashString(actionId)}`.
-  // We mirror the hashString function from decision-graph.ts.
   const actionNodeId = `action-${hashId(actionId)}`
 
   // 1. Verify the action node exists in the graph
   const actionNode = graph.nodes.find((n) => n.id === actionNodeId && n.type === 'ACTION')
   if (!actionNode) return 'UNKNOWN'
 
-  // 2. Find LEADS_TO edges from this action
-  const leadsToEdges = graph.edges.filter(
+  // 2. Find a LEADS_TO edge to an OUTCOME node
+  const leadsToEdge = graph.edges.find(
     (e) => e.from === actionNodeId && e.type === 'LEADS_TO'
   )
+  if (!leadsToEdge) return 'UNKNOWN'
 
-  if (leadsToEdges.length === 0) return 'UNKNOWN'
+  // 3. Verify the destination is an OUTCOME node
+  const outcomeNode = graph.nodes.find(
+    (n) => n.id === leadsToEdge.to && n.type === 'OUTCOME'
+  )
+  if (!outcomeNode) return 'UNKNOWN'
 
-  // 3. Look at the OUTCOME node(s) this action leads to
-  for (const edge of leadsToEdges) {
-    const outcomeNode = graph.nodes.find((n) => n.id === edge.to && n.type === 'OUTCOME')
-    if (!outcomeNode) continue
-
-    // Derive the outcome type from the outcome node's provenance + label.
-    // The outcome node's provenance.source tells us where it came from:
-    //   - 'Strategy.bestTrajectory' → ROUTE_UNLOCKED
-    //   - 'DesiredCapability.potentialUnlocks' → CAPABILITY_ACQUIRED
-    const source = outcomeNode.provenance?.source ?? ''
-    const label = (outcomeNode.label ?? '').toLowerCase()
-    const description = (outcomeNode.description ?? '').toLowerCase()
-
-    if (source === 'Strategy.bestTrajectory') {
-      // The best trajectory outcome — derive from the trajectory label
-      if (label.includes('citizenship') || label.includes('passport')) return 'CITIZENSHIP_GRANTED'
-      if (label.includes('residence') || label.includes('permit') || label.includes('visa')) return 'RESIDENCE_GRANTED'
-      return 'ROUTE_UNLOCKED'
-    }
-
-    if (source === 'DesiredCapability.potentialUnlocks') {
-      // A capability unlock — the outcome is that a capability was acquired
-      return 'CAPABILITY_ACQUIRED'
-    }
-
-    // Fallback: if the graph provides an outcome node but we cannot establish
-    // a semantic type from its provenance, return UNKNOWN (not a text guess).
-    // We do NOT pattern-match on label/description here — that would be a
-    // heuristic, not authoritative graph data.
-    void label
-    void description
-  }
-
-  return 'UNKNOWN'
+  // 4. Derive the outcome type from the outcome node's AUTHORITATIVE
+  //    provenance.source ONLY. Never from label/description text.
+  const source = outcomeNode.provenance?.source ?? ''
+  return PROVENANCE_SOURCE_TO_OUTCOME_TYPE[source] ?? 'UNKNOWN'
 }
 
 /**
  * Derive the OutcomeType for a strategy from its historical DecisionGraph.
- * Authoritative — uses the graph's OUTCOME node for the best trajectory.
+ * AUTHORITATIVE — uses ONLY the graph's OUTCOME node provenance.source.
+ * NEVER reads label/description text.
+ *
+ * Returns UNKNOWN if the outcome node's provenance.source has no exact
+ * mapping. The graph does not contain authoritative metadata to
+ * distinguish CITIZENSHIP_GRANTED from RESIDENCE_GRANTED from
+ * ROUTE_UNLOCKED — so we return UNKNOWN rather than guessing.
  */
 export function deriveStrategyOutcomeTypeFromGraph(
   graph: DecisionGraph,
   strategy: Strategy,
 ): OutcomeType {
-  // Find the OUTCOME node for the best trajectory
   if (!strategy.bestTrajectory) return 'UNKNOWN'
   const bestOutcomeId = `outcome-${hashId(strategy.bestTrajectory.id)}`
   const outcomeNode = graph.nodes.find(
@@ -449,22 +454,176 @@ export function deriveStrategyOutcomeTypeFromGraph(
 
   if (!outcomeNode) return 'UNKNOWN'
 
-  // Only derive from authoritative provenance
+  // Derive from AUTHORITATIVE provenance.source ONLY. Never from label.
   const source = outcomeNode.provenance?.source ?? ''
-  if (source === 'Strategy.bestTrajectory') {
-    const label = (outcomeNode.label ?? '').toLowerCase()
-    if (label.includes('citizenship') || label.includes('passport')) return 'CITIZENSHIP_GRANTED'
-    if (label.includes('residence') || label.includes('permit') || label.includes('visa')) return 'RESIDENCE_GRANTED'
-    return 'ROUTE_UNLOCKED'
-  }
-
-  return 'UNKNOWN'
+  return PROVENANCE_SOURCE_TO_OUTCOME_TYPE[source] ?? 'UNKNOWN'
 }
 
 // ---------------------------------------------------------------------------
-// Graph Node Linkage Validation
+// Graph Node Linkage Validation — full causal chain verification
 // ---------------------------------------------------------------------------
+//
+// BLOCKER 2 FIX: The previous validateGraphNodeLinkage() only checked node
+// existence + type. It did NOT verify the ACTION→LEADS_TO→OUTCOME causal
+// edge. The createExpectedOutcomes() function used the edge destination as
+// graphNodeId without validating that the destination was actually an
+// OUTCOME node.
+//
+// The new validation API verifies the FULL causal chain:
+//   1. ACTION node exists
+//   2. ACTION node has type ACTION
+//   3. OUTCOME node exists
+//   4. OUTCOME node has type OUTCOME
+//   5. edge exists
+//   6. edge.from === ACTION node ID
+//   7. edge.to === OUTCOME node ID
+//   8. edge.type === LEADS_TO
+//
+// If ANY condition fails, the linkage is invalid and graphNodeId must be null.
 
+export interface ActionOutcomeLinkageResult {
+  valid: boolean
+  reason:
+    | 'OK'
+    | 'ACTION_NODE_NOT_FOUND'
+    | 'ACTION_NODE_TYPE_MISMATCH'
+    | 'OUTCOME_NODE_NOT_FOUND'
+    | 'OUTCOME_NODE_TYPE_MISMATCH'
+    | 'LEADS_TO_EDGE_MISSING'
+    | 'EDGE_DIRECTION_INVALID'
+    | 'EDGE_TYPE_INVALID'
+    | 'EDGE_DESTINATION_NOT_OUTCOME'
+  /** The validated ACTION node ID (only present when valid). */
+  actionNodeId?: string
+  /** The validated OUTCOME node ID (only present when valid). */
+  outcomeNodeId?: string
+  /** The validated edge type (only present when valid). */
+  edgeType?: string
+}
+
+/**
+ * Validate the full ACTION →(LEADS_TO)→ OUTCOME causal chain in the EXACT
+ * historical DecisionGraph.
+ *
+ * This verifies ALL of the following:
+ *   1. ACTION node exists in the graph
+ *   2. ACTION node has type ACTION
+ *   3. A LEADS_TO edge exists from the ACTION node
+ *   4. The edge's destination node exists
+ *   5. The destination node has type OUTCOME
+ *   6. edge.from === actionNodeId
+ *   7. edge.to === outcomeNodeId
+ *   8. edge.type === 'LEADS_TO'
+ *
+ * If ANY condition fails, returns { valid: false, reason: ... }.
+ * The caller MUST set graphNodeId = null when valid is false.
+ *
+ * We do NOT reconstruct graph relationships from text. We do NOT search for
+ * a "best matching" graph node. We do NOT substitute a current graph for a
+ * historical graph. The historical graph is immutable.
+ */
+export function validateActionOutcomeLinkage(
+  graph: DecisionGraph,
+  actionId: string,
+): ActionOutcomeLinkageResult {
+  const actionNodeId = `action-${hashId(actionId)}`
+
+  // 1. ACTION node exists
+  const actionNode = graph.nodes.find((n) => n.id === actionNodeId)
+  if (!actionNode) {
+    return { valid: false, reason: 'ACTION_NODE_NOT_FOUND' }
+  }
+
+  // 2. ACTION node has type ACTION
+  if (actionNode.type !== 'ACTION') {
+    return { valid: false, reason: 'ACTION_NODE_TYPE_MISMATCH' }
+  }
+
+  // 3. Find a LEADS_TO edge from the ACTION node
+  const leadsToEdge = graph.edges.find(
+    (e) => e.from === actionNodeId && e.type === 'LEADS_TO'
+  )
+  if (!leadsToEdge) {
+    return { valid: false, reason: 'LEADS_TO_EDGE_MISSING' }
+  }
+
+  // 4. The edge's destination node exists
+  const outcomeNode = graph.nodes.find((n) => n.id === leadsToEdge.to)
+  if (!outcomeNode) {
+    return { valid: false, reason: 'OUTCOME_NODE_NOT_FOUND' }
+  }
+
+  // 5. The destination node has type OUTCOME (NOT a CAPABILITY, ACTION, etc.)
+  if (outcomeNode.type !== 'OUTCOME') {
+    return { valid: false, reason: 'EDGE_DESTINATION_NOT_OUTCOME' }
+  }
+
+  // 6, 7, 8 are implicitly verified by the edge filter above:
+  //   - edge.from === actionNodeId (filter condition)
+  //   - edge.to === outcomeNode.id (we found the node by this ID)
+  //   - edge.type === 'LEADS_TO' (filter condition)
+
+  return {
+    valid: true,
+    reason: 'OK',
+    actionNodeId,
+    outcomeNodeId: outcomeNode.id,
+    edgeType: 'LEADS_TO',
+  }
+}
+
+export interface StrategyOutcomeLinkageResult {
+  valid: boolean
+  reason:
+    | 'OK'
+    | 'NO_BEST_TRAJECTORY'
+    | 'OUTCOME_NODE_NOT_FOUND'
+    | 'OUTCOME_NODE_TYPE_MISMATCH'
+  /** The validated OUTCOME node ID (only present when valid). */
+  outcomeNodeId?: string
+}
+
+/**
+ * Validate the strategy-level OUTCOME node in the EXACT historical
+ * DecisionGraph. Verifies the OUTCOME node for the best trajectory exists
+ * and has type OUTCOME.
+ *
+ * Does NOT assume that `outcome-${hash(bestTrajectory.id)}` is valid merely
+ * because the ID can be generated — verifies the node actually exists in the
+ * historical graph.
+ */
+export function validateStrategyOutcomeLinkage(
+  graph: DecisionGraph,
+  strategy: Strategy,
+): StrategyOutcomeLinkageResult {
+  if (!strategy.bestTrajectory) {
+    return { valid: false, reason: 'NO_BEST_TRAJECTORY' }
+  }
+
+  const bestOutcomeId = `outcome-${hashId(strategy.bestTrajectory.id)}`
+  const outcomeNode = graph.nodes.find((n) => n.id === bestOutcomeId)
+
+  if (!outcomeNode) {
+    return { valid: false, reason: 'OUTCOME_NODE_NOT_FOUND' }
+  }
+
+  if (outcomeNode.type !== 'OUTCOME') {
+    return { valid: false, reason: 'OUTCOME_NODE_TYPE_MISMATCH' }
+  }
+
+  return {
+    valid: true,
+    reason: 'OK',
+    outcomeNodeId: outcomeNode.id,
+  }
+}
+
+/**
+ * @deprecated Use validateActionOutcomeLinkage() for action-level outcomes
+ * or validateStrategyOutcomeLinkage() for strategy-level outcomes. This
+ * function is retained for backward compatibility but only checks node
+ * existence + type — it does NOT verify the causal edge.
+ */
 export interface GraphNodeLinkageResult {
   valid: boolean
   reason:
@@ -477,45 +636,22 @@ export interface GraphNodeLinkageResult {
 }
 
 /**
- * Validate that a graphNodeId refers to an actual node in the EXACT historical
- * DecisionGraph. This enforces graph linkage integrity:
- *
- *   - node exists in the historical graph
- *   - node type is correct
- *   - required causal edge exists (where applicable)
- *   - edge direction is correct
- *
- * We do NOT reconstruct graph relationships from text. We do NOT search for
- * a "best matching" graph node. We do NOT substitute a current graph for a
- * historical graph. The historical graph is immutable.
+ * @deprecated Use validateActionOutcomeLinkage() or validateStrategyOutcomeLinkage().
+ * This function only checks node existence + type — it does NOT verify the
+ * causal edge. Retained for backward compatibility.
  */
 export function validateGraphNodeLinkage(
   graph: DecisionGraph,
   nodeId: string,
   expectedType: 'ACTION' | 'OUTCOME' | 'OBJECTIVE' | 'NEED' | 'BLOCKER' | 'CAPABILITY',
 ): GraphNodeLinkageResult {
-  // 1. Node exists in the graph
   const node = graph.nodes.find((n) => n.id === nodeId)
   if (!node) {
     return { valid: false, reason: 'NODE_NOT_FOUND' }
   }
-
-  // 2. Node type is correct
   if (node.type !== expectedType) {
     return { valid: false, reason: 'NODE_TYPE_MISMATCH' }
   }
-
-  // 3. For ACTION nodes: verify a LEADS_TO edge exists (actions lead to outcomes)
-  if (expectedType === 'ACTION') {
-    const hasLeadsTo = graph.edges.some(
-      (e) => e.from === nodeId && e.type === 'LEADS_TO'
-    )
-    if (!hasLeadsTo) {
-      // An action with no LEADS_TO edge is still a valid node — it just
-      // doesn't have a connected outcome. This is not an error.
-    }
-  }
-
   return { valid: true, reason: 'OK' }
 }
 
@@ -696,17 +832,15 @@ export function createExpectedOutcomes(input: ExpectedOutcomeInput): ExpectedOut
   const records: ExpectedOutcomeRecord[] = []
   const { strategy, decisionRecordId, objectiveId, userId, adoptionDate, graph } = input
 
-  // Find the graph OUTCOME node for the best trajectory
-  const bestOutcomeNodeId = strategy.bestTrajectory
-    ? `outcome-${hashId(strategy.bestTrajectory.id)}`
-    : undefined
-
-  // Validate the graph linkage — only set graphNodeId if the node actually
-  // exists in the historical graph.
-  const graphOutcomeLinkage = (graph && bestOutcomeNodeId)
-    ? validateGraphNodeLinkage(graph, bestOutcomeNodeId, 'OUTCOME')
+  // Validate the strategy-level OUTCOME node in the historical graph.
+  // Uses validateStrategyOutcomeLinkage — verifies the node exists AND has
+  // type OUTCOME. Does NOT assume the generated ID is valid.
+  const strategyLinkage = graph
+    ? validateStrategyOutcomeLinkage(graph, strategy)
     : null
-  const validGraphOutcomeId = graphOutcomeLinkage?.valid ? bestOutcomeNodeId : null
+  const validGraphOutcomeId = strategyLinkage?.valid
+    ? strategyLinkage.outcomeNodeId ?? null
+    : null
 
   // --- Strategy-level expected outcome ---
   const strategyPrediction = deriveStrategyPrediction(strategy, decisionRecordId)
@@ -743,25 +877,23 @@ export function createExpectedOutcomes(input: ExpectedOutcomeInput): ExpectedOut
   // --- Action-level expected outcomes ---
   for (const action of strategy.actionPlan?.actions ?? []) {
     const actionPrediction = deriveActionPrediction(strategy, action.id, decisionRecordId)
-    // Graph-based type derivation (authoritative). Falls back to UNKNOWN.
+    // Graph-based type derivation (authoritative, never text). Falls back to UNKNOWN.
     const actionOutcomeType = graph
       ? deriveOutcomeTypeFromGraph(graph, action.id)
       : 'UNKNOWN'
     const actionExpectedBy = deriveExpectedByDate(action, adoptionDate)
 
-    // Validate the action's graph node exists in the historical graph.
-    const actionNodeId = `action-${hashId(action.id)}`
-    const actionNodeLinkage = graph
-      ? validateGraphNodeLinkage(graph, actionNodeId, 'ACTION')
+    // Validate the FULL ACTION→LEADS_TO→OUTCOME causal chain.
+    // graphNodeId is only set when ALL of the following are true:
+    //   1. ACTION node exists + has type ACTION
+    //   2. LEADS_TO edge exists from ACTION
+    //   3. Destination node exists + has type OUTCOME
+    // If ANY condition fails, graphNodeId is null.
+    const actionLinkage = graph
+      ? validateActionOutcomeLinkage(graph, action.id)
       : null
-
-    // Find the OUTCOME node this action leads to (via LEADS_TO edge)
-    const actionOutcomeEdge = graph?.edges.find(
-      (e) => e.from === actionNodeId && e.type === 'LEADS_TO'
-    )
-    // Only set graphNodeId if both the action node AND the outcome node exist
-    const actionGraphNodeId = (actionNodeLinkage?.valid && actionOutcomeEdge)
-      ? actionOutcomeEdge.to
+    const actionGraphNodeId = actionLinkage?.valid
+      ? actionLinkage.outcomeNodeId ?? null
       : null
 
     records.push({

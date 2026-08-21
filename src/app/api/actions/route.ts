@@ -32,7 +32,7 @@ import {
   deriveOutcomeTypeFromGraph,
   deriveConfidenceLevel,
   deriveExpectedByDate,
-  validateGraphNodeLinkage,
+  validateActionOutcomeLinkage,
 } from '@/lib/strategy/outcome-intelligence'
 import { buildDecisionGraph } from '@/lib/strategy/decision-graph'
 import type { ActionPlan, Strategy } from '@/lib/strategy/types'
@@ -158,12 +158,15 @@ export async function POST(req: Request) {
               ? deriveExpectedByDate(action, historicalAdoptionDate)
               : null
 
-            // Validate graph node linkage: the action's graph node must exist
-            // in the historical graph.
-            const actionGraphNodeId = `action-${hashId(action.id)}`
-            const graphLinkage = historicalGraph
-              ? validateGraphNodeLinkage(historicalGraph, actionGraphNodeId, 'ACTION')
-              : { valid: false, reason: 'NO_HISTORICAL_GRAPH' as const }
+            // Validate the FULL ACTION→LEADS_TO→OUTCOME causal chain.
+            // graphNodeId is only set when ALL of the following are true:
+            //   1. ACTION node exists + has type ACTION
+            //   2. LEADS_TO edge exists from ACTION
+            //   3. Destination node exists + has type OUTCOME
+            // If ANY condition fails, graphNodeId is null.
+            const actionLinkage = historicalGraph
+              ? validateActionOutcomeLinkage(historicalGraph, action.id)
+              : null
 
             await db.actionOutcome.create({
               data: {
@@ -171,9 +174,12 @@ export async function POST(req: Request) {
                 userActionId: created.id,
                 decisionRecordId: prediction.decisionRecordId,
                 outcomeType,
-                // graphNodeId is only set if the node actually exists in the
-                // historical graph. Never fabricated.
-                graphNodeId: graphLinkage.valid ? actionGraphNodeId : null,
+                // graphNodeId is only set if the full causal chain is valid.
+                // Never fabricated. The outcomeNodeId comes from the validated
+                // linkage result (the actual OUTCOME node, not a guessed ID).
+                graphNodeId: actionLinkage?.valid
+                  ? actionLinkage.outcomeNodeId ?? null
+                  : null,
                 expectedByDate,
                 confidenceLevel,
                 evaluationStatus: 'UNKNOWN',

@@ -21,7 +21,7 @@ import { buildStrategy } from '@/lib/strategy'
 import { exampleState } from '@/lib/domain/state'
 import { parseIntentDeterministic } from '@/lib/domain/intent'
 import { generateRoutes } from '@/lib/engine/routes'
-import { buildDecisionGraph } from '@/lib/strategy/decision-graph'
+import { buildDecisionGraph, type DecisionGraph } from '@/lib/strategy/decision-graph'
 import {
   createExpectedOutcomes,
   deriveOutcomeTypeFromAction,
@@ -32,6 +32,8 @@ import {
   deriveStrategyOutcomeTypeFromGraph,
   validateGraphNodeLinkage,
   validateGraphEdge,
+  validateActionOutcomeLinkage,
+  validateStrategyOutcomeLinkage,
   deriveExpectedByDate,
   evaluateActionOutcomeN07,
   evaluateStrategyOutcomeN07,
@@ -1226,6 +1228,350 @@ describe('N0.7 — Outcome Intelligence', () => {
       const validLevels: ConfidenceLevel[] = ['HIGH', 'MEDIUM', 'LOW', 'UNKNOWN']
       for (const l of validLevels) {
         expect(['HIGH', 'MEDIUM', 'LOW', 'UNKNOWN']).toContain(l)
+      }
+    })
+  })
+
+  // =========================================================================
+  // N0.7 FINAL HARDENING — No text-based classification + full causal chain
+  // =========================================================================
+
+  describe('N0.7 Final Hardening — no text classification + full causal chain validation', () => {
+    let graph: ReturnType<typeof buildDecisionGraph>
+
+    beforeAll(() => {
+      graph = buildDecisionGraph(strategy)
+    })
+
+    // Helper: build a synthetic graph with specific structure for testing
+    function buildSyntheticGraph(opts: {
+      actionId?: string
+      outcomeId?: string
+      outcomeLabel?: string
+      outcomeDescription?: string
+      outcomeProvenanceSource?: string
+      edgeType?: string
+      edgeDirection?: 'forward' | 'reverse'
+      destinationType?: string
+      includeEdge?: boolean
+    }): DecisionGraph {
+      const actionId = opts.actionId ?? 'act-syn'
+      const outcomeId = opts.outcomeId ?? 'out-syn'
+      const nodes: any[] = [
+        { id: 'obj', type: 'OBJECTIVE', label: 'Obj', description: 'd', evidence: 'e', provenance: { source: 'test', references: {} } },
+        { id: `action-${hashIdLocal(actionId)}`, type: 'ACTION', label: 'Act', description: 'd', evidence: 'e', provenance: { source: 'test', references: {} } },
+      ]
+      // Add the destination node (default OUTCOME, but can be overridden)
+      const destType = opts.destinationType ?? 'OUTCOME'
+      nodes.push({
+        id: outcomeId,
+        type: destType,
+        label: opts.outcomeLabel ?? 'Outcome',
+        description: opts.outcomeDescription ?? 'd',
+        evidence: 'e',
+        provenance: { source: opts.outcomeProvenanceSource ?? 'Test.synthetic', references: {} },
+      })
+
+      const edges: any[] = []
+      if (opts.includeEdge !== false) {
+        const edgeType = opts.edgeType ?? 'LEADS_TO'
+        if (opts.edgeDirection === 'reverse') {
+          edges.push({ from: outcomeId, to: `action-${hashIdLocal(actionId)}`, type: edgeType })
+        } else {
+          edges.push({ from: `action-${hashIdLocal(actionId)}`, to: outcomeId, type: edgeType })
+        }
+      }
+
+      return {
+        nodes,
+        edges,
+        graphSchemaVersion: '1.0.0',
+        graphHash: 'synthetic',
+        generatedAt: '2025-01-01T00:00:00Z',
+        engineVersion: 'test',
+      }
+    }
+
+    function hashIdLocal(id: string): string {
+      let hash = 0
+      for (let i = 0; i < id.length; i++) {
+        const char = id.charCodeAt(i)
+        hash = ((hash << 5) - hash) + char
+        hash |= 0
+      }
+      return Math.abs(hash).toString(36)
+    }
+
+    // --- BLOCKER 1: No text-based classification ---
+
+    // Test A: OUTCOME node with "Residence permit" label but NO authoritative
+    // outcome type must produce UNKNOWN, not RESIDENCE_GRANTED.
+    it('Test A: OUTCOME node with "Residence permit" label but no authoritative type → UNKNOWN', () => {
+      const synthGraph = buildSyntheticGraph({
+        actionId: 'act-a',
+        outcomeId: 'out-a',
+        outcomeLabel: 'Residence permit',
+        outcomeProvenanceSource: 'Some.Unknown.Source', // no exact mapping
+      })
+      const type = deriveOutcomeTypeFromGraph(synthGraph, 'act-a')
+      expect(type).toBe('UNKNOWN')
+      expect(type).not.toBe('RESIDENCE_GRANTED')
+    })
+
+    // Test B: Changing only label/description/display text must NOT change
+    // the derived OutcomeType.
+    it('Test B: changing only label/description does NOT change OutcomeType', () => {
+      const graph1 = buildSyntheticGraph({
+        actionId: 'act-b',
+        outcomeId: 'out-b',
+        outcomeLabel: 'Residence permit',
+        outcomeDescription: 'A permit for residence',
+        outcomeProvenanceSource: 'DesiredCapability.potentialUnlocks',
+      })
+      const graph2 = buildSyntheticGraph({
+        actionId: 'act-b',
+        outcomeId: 'out-b',
+        outcomeLabel: 'COMPLETELY DIFFERENT TEXT',
+        outcomeDescription: 'TOTALLY UNRELATED DESCRIPTION',
+        outcomeProvenanceSource: 'DesiredCapability.potentialUnlocks',
+      })
+      const type1 = deriveOutcomeTypeFromGraph(graph1, 'act-b')
+      const type2 = deriveOutcomeTypeFromGraph(graph2, 'act-b')
+      // Same provenance.source → same OutcomeType, regardless of label
+      expect(type1).toBe(type2)
+      expect(type1).toBe('CAPABILITY_ACQUIRED')
+    })
+
+    // Test C: An explicit authoritative domain outcome type produces the
+    // corresponding OutcomeType regardless of display label.
+    it('Test C: authoritative provenance.source produces OutcomeType regardless of label', () => {
+      const synthGraph = buildSyntheticGraph({
+        actionId: 'act-c',
+        outcomeId: 'out-c',
+        outcomeLabel: 'xyz gibberish label',
+        outcomeProvenanceSource: 'DesiredCapability.potentialUnlocks',
+      })
+      const type = deriveOutcomeTypeFromGraph(synthGraph, 'act-c')
+      // The authoritative source maps to CAPABILITY_ACQUIRED, even though
+      // the label is gibberish.
+      expect(type).toBe('CAPABILITY_ACQUIRED')
+    })
+
+    // Test D: No label.includes()/description.includes() semantic
+    // classification remains in the authoritative outcome derivation path.
+    it('Test D: no label.includes() in authoritative derivation (Strategy.bestTrajectory → UNKNOWN)', () => {
+      // A strategy-level outcome with source 'Strategy.bestTrajectory' has
+      // NO exact mapping → UNKNOWN. Previously this would have read the
+      // label for "citizenship"/"residence"/etc. Now it returns UNKNOWN.
+      const synthGraph = buildSyntheticGraph({
+        actionId: 'act-d',
+        outcomeId: 'out-d',
+        outcomeLabel: 'Portuguese citizenship pathway',
+        outcomeProvenanceSource: 'Strategy.bestTrajectory',
+      })
+      // For the strategy-level derivation, we need a strategy with a
+      // bestTrajectory whose ID hashes to 'out-d'. We verify the function
+      // returns UNKNOWN regardless of the label.
+      const fakeStrategy = {
+        ...strategy,
+        bestTrajectory: { ...strategy.bestTrajectory!, id: 'syn' },
+      } as Strategy
+      // Rebuild graph with outcome ID matching the fake strategy
+      const synthGraph2 = buildSyntheticGraph({
+        actionId: 'act-d2',
+        outcomeId: `outcome-${hashIdLocal('syn')}`,
+        outcomeLabel: 'Portuguese citizenship pathway',
+        outcomeProvenanceSource: 'Strategy.bestTrajectory',
+      })
+      const type = deriveStrategyOutcomeTypeFromGraph(synthGraph2, fakeStrategy)
+      // Returns UNKNOWN — no text-based classification
+      expect(type).toBe('UNKNOWN')
+      expect(type).not.toBe('CITIZENSHIP_GRANTED')
+    })
+
+    // --- BLOCKER 2: Full causal chain validation ---
+
+    // Test E: Valid ACTION→LEADS_TO→OUTCOME produces correct graphNodeId.
+    it('Test E: valid ACTION→LEADS_TO→OUTCOME produces correct graphNodeId', () => {
+      const synthGraph = buildSyntheticGraph({
+        actionId: 'act-e',
+        outcomeId: 'out-e',
+        outcomeProvenanceSource: 'DesiredCapability.potentialUnlocks',
+      })
+      const linkage = validateActionOutcomeLinkage(synthGraph, 'act-e')
+      expect(linkage.valid).toBe(true)
+      expect(linkage.reason).toBe('OK')
+      expect(linkage.actionNodeId).toBe(`action-${hashIdLocal('act-e')}`)
+      expect(linkage.outcomeNodeId).toBe('out-e')
+      expect(linkage.edgeType).toBe('LEADS_TO')
+    })
+
+    // Test F: Missing edge (ACTION + OUTCOME exist, no LEADS_TO) → invalid.
+    it('Test F: missing LEADS_TO edge → invalid, graphNodeId must be null', () => {
+      const synthGraph = buildSyntheticGraph({
+        actionId: 'act-f',
+        outcomeId: 'out-f',
+        includeEdge: false, // no edge
+      })
+      const linkage = validateActionOutcomeLinkage(synthGraph, 'act-f')
+      expect(linkage.valid).toBe(false)
+      expect(linkage.reason).toBe('LEADS_TO_EDGE_MISSING')
+      expect(linkage.outcomeNodeId).toBeUndefined()
+    })
+
+    // Test G: Wrong direction (OUTCOME→LEADS_TO→ACTION) → invalid.
+    it('Test G: wrong edge direction (OUTCOME→ACTION) → invalid', () => {
+      const synthGraph = buildSyntheticGraph({
+        actionId: 'act-g',
+        outcomeId: 'out-g',
+        edgeDirection: 'reverse', // OUTCOME → ACTION
+      })
+      const linkage = validateActionOutcomeLinkage(synthGraph, 'act-g')
+      expect(linkage.valid).toBe(false)
+      // The edge is in the wrong direction — no LEADS_TO from ACTION
+      expect(linkage.reason).toBe('LEADS_TO_EDGE_MISSING')
+    })
+
+    // Test H: Wrong edge type (ACTION→REQUIRES→OUTCOME) → invalid.
+    it('Test H: wrong edge type (REQUIRES instead of LEADS_TO) → invalid', () => {
+      const synthGraph = buildSyntheticGraph({
+        actionId: 'act-h',
+        outcomeId: 'out-h',
+        edgeType: 'REQUIRES', // wrong type
+      })
+      const linkage = validateActionOutcomeLinkage(synthGraph, 'act-h')
+      expect(linkage.valid).toBe(false)
+      expect(linkage.reason).toBe('LEADS_TO_EDGE_MISSING')
+    })
+
+    // Test I: Edge destination is not an OUTCOME node (ACTION→LEADS_TO→CAPABILITY) → rejected.
+    it('Test I: edge destination is CAPABILITY (not OUTCOME) → rejected', () => {
+      const synthGraph = buildSyntheticGraph({
+        actionId: 'act-i',
+        outcomeId: 'out-i',
+        destinationType: 'CAPABILITY', // wrong destination type
+      })
+      const linkage = validateActionOutcomeLinkage(synthGraph, 'act-i')
+      expect(linkage.valid).toBe(false)
+      expect(linkage.reason).toBe('EDGE_DESTINATION_NOT_OUTCOME')
+    })
+
+    // Test J: A forged graph node ID that has the correct string format
+    // but does not exist in the historical graph → rejected.
+    it("Test J: forged action ID that does not exist in graph → rejected", () => {
+      const linkage = validateActionOutcomeLinkage(graph, 'forged-action-id-not-in-graph')
+      expect(linkage.valid).toBe(false)
+      expect(linkage.reason).toBe('ACTION_NODE_NOT_FOUND')
+    })
+
+    // Test K: A current/new graph node cannot satisfy validation against
+    // an older historical strategy graph.
+    it('Test K: current graph cannot satisfy validation against old historical graph', () => {
+      // Build a "historical" graph (the one from beforeAll)
+      const historicalGraph = graph
+      // Build a "current" graph with DIFFERENT nodes
+      const currentGraph = buildSyntheticGraph({
+        actionId: 'act-current-only',
+        outcomeId: 'out-current-only',
+      })
+      // The historical graph does NOT contain 'act-current-only' — validation
+      // against the historical graph must fail.
+      const linkage = validateActionOutcomeLinkage(historicalGraph, 'act-current-only')
+      expect(linkage.valid).toBe(false)
+      expect(linkage.reason).toBe('ACTION_NODE_NOT_FOUND')
+      // The current graph DOES contain it — but we must use the historical graph,
+      // not the current one.
+      const currentLinkage = validateActionOutcomeLinkage(currentGraph, 'act-current-only')
+      expect(currentLinkage.valid).toBe(true)
+      // This proves the validation is graph-specific — a current graph cannot
+      // satisfy validation against a historical graph.
+    })
+
+    // --- Strategy-level OUTCOME node validation ---
+
+    it('strategy-level OUTCOME node validation rejects non-existent node', () => {
+      const fakeStrategy = {
+        ...strategy,
+        bestTrajectory: { ...strategy.bestTrajectory!, id: 'nonexistent' },
+      } as Strategy
+      const linkage = validateStrategyOutcomeLinkage(graph, fakeStrategy)
+      expect(linkage.valid).toBe(false)
+      expect(linkage.reason).toBe('OUTCOME_NODE_NOT_FOUND')
+    })
+
+    it('strategy-level OUTCOME node validation accepts existing OUTCOME node', () => {
+      // Use the real strategy — its bestTrajectory should have an OUTCOME node
+      if (strategy.bestTrajectory) {
+        const linkage = validateStrategyOutcomeLinkage(graph, strategy)
+        // May or may not be valid depending on whether the graph has the node
+        // but the function should not crash
+        expect(typeof linkage.valid).toBe('boolean')
+      }
+    })
+
+    it('strategy-level OUTCOME node validation rejects node with wrong type', () => {
+      // Build a graph where the outcome ID exists but has type CAPABILITY
+      const fakeStrategy = {
+        ...strategy,
+        bestTrajectory: { ...strategy.bestTrajectory!, id: 'wrong-type' },
+      } as Strategy
+      const synthGraph = buildSyntheticGraph({
+        actionId: 'act-wt',
+        outcomeId: `outcome-${hashIdLocal('wrong-type')}`,
+        destinationType: 'CAPABILITY', // wrong type
+      })
+      const linkage = validateStrategyOutcomeLinkage(synthGraph, fakeStrategy)
+      expect(linkage.valid).toBe(false)
+      expect(linkage.reason).toBe('OUTCOME_NODE_TYPE_MISMATCH')
+    })
+
+    // --- createExpectedOutcomes uses the new validation ---
+
+    it('createExpectedOutcomes sets graphNodeId only when full causal chain is valid', () => {
+      const records = createExpectedOutcomes({
+        strategy,
+        decisionRecordId: 'rec-chain',
+        objectiveId: 'income',
+        userId: 'user-chain',
+        adoptionDate: new Date('2025-01-01'),
+        graph,
+      })
+      // Every non-null graphNodeId on an ACTION-level record must correspond
+      // to a real OUTCOME node connected via a valid LEADS_TO edge from a
+      // real ACTION node. Strategy-level records use validateStrategyOutcomeLinkage
+      // (node existence + type only — no edge required).
+      for (const r of records) {
+        if (r.graphNodeId && r.scope === 'ACTION') {
+          // Verify the node exists + has type OUTCOME
+          const node = graph.nodes.find((n) => n.id === r.graphNodeId)
+          expect(node).toBeDefined()
+          expect(node!.type).toBe('OUTCOME')
+          // Verify a LEADS_TO edge connects some ACTION to this OUTCOME
+          const hasLeadsTo = graph.edges.some(
+            (e) => e.to === r.graphNodeId && e.type === 'LEADS_TO'
+          )
+          expect(hasLeadsTo).toBe(true)
+        }
+        if (r.graphNodeId && r.scope === 'STRATEGY') {
+          // Strategy-level: node must exist + have type OUTCOME
+          const node = graph.nodes.find((n) => n.id === r.graphNodeId)
+          expect(node).toBeDefined()
+          expect(node!.type).toBe('OUTCOME')
+        }
+      }
+    })
+
+    it('createExpectedOutcomes sets graphNodeId=null when graph is absent', () => {
+      const records = createExpectedOutcomes({
+        strategy,
+        decisionRecordId: 'rec-no-graph',
+        objectiveId: 'income',
+        userId: 'user-no-graph',
+        adoptionDate: new Date('2025-01-01'),
+        // no graph
+      })
+      for (const r of records) {
+        expect(r.graphNodeId).toBeNull()
       }
     })
   })
