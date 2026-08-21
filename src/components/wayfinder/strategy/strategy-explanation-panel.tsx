@@ -37,7 +37,7 @@ export function StrategyExplanationPanel({
     unknown: { label: 'Unknown confidence', cls: 'border-muted-foreground/40 text-muted-foreground bg-muted/20' },
   }
 
-  const conf = confidenceStyle[explanation.confidence] ?? confidenceStyle.unknown
+  const conf = confidenceStyle[explanation.overallConfidence] ?? confidenceStyle.unknown
 
   return (
     <Card className={cn('wf-panel border-border/60 bg-card/60 p-4 sm:p-5', className)}>

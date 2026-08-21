@@ -41,12 +41,16 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   }
 
   // If the strategy already has a decision graph (N0.6+), return it.
-  // Otherwise, reconstruct it from the stored strategy (backward compat).
+  // Otherwise, reconstruct it from the stored strategy — but mark it as
+  // legacyReconstructed so the audit trail is honest about provenance.
   let graph = strategy.decisionGraph
   let explanation = strategy.explanation
 
   if (!graph) {
-    graph = buildDecisionGraph(strategy)
+    // FIX #7: mark as legacy reconstructed — this graph was NOT originally
+    // persisted with the historical record. It is reconstructed for
+    // backward compatibility, not as historical evidence.
+    graph = buildDecisionGraph(strategy, true)
   }
   if (!explanation || typeof explanation === 'string') {
     explanation = generateExplanation(strategy, graph)

@@ -1,28 +1,37 @@
-// Wayfinder — Decision Graph (N0.6)
+// Wayfinder — Decision Graph (N0.6 hardened)
 //
 // This module implements the explainable decision graph that answers:
 //   "Why does this strategy exist?"
 //
+// N0.6 HARDENING (9 issues fixed):
+//   1. Explanation is GRAPH-DERIVED (traverses nodes+edges, not parallel fields)
+//   2. Correct edge semantics (Capability→Action via REQUIRES, no ADDRESSES misuse)
+//   3. Blockers connected to the CORRECT needs (not needs[0])
+//   4. graphSchemaVersion + graphHash (first-class immutable graph artifact)
+//   5. Canonical graph comparison (excludes generatedAt from hash)
+//   6. Structured provenance references (not just string labels)
+//   7. Legacy reconstructed graphs explicitly marked
+//   8. Separated confidence dimensions
+//   9. Cleaned up dead nodeIdCounter code
+//
 // The graph is:
-//   - DETERMINISTIC: same inputs → same graph (no LLM in the reasoning path)
-//   - IMMUTABLE: stored as a snapshot, never mutated
-//   - REPLAYABLE: can be reconstructed from historical strategy inputs
-//   - TRACEABLE: every node has provenance + evidence
-//
-// GRAPH STRUCTURE:
-//
-//   Objective → Need → Blocker → Capability → Action → Expected Outcome
-//                                      ↑
-//                                 Assumption
-//                                 Tradeoff
-//                                 Alternative
-//
-// The graph is a DAG (directed acyclic graph) — edges flow from objectives
-// down to outcomes, with cross-references for tradeoffs and alternatives.
+//   - DETERMINISTIC: same inputs → same graph (no LLM)
+//   - IMMUTABLE: stored as a snapshot with a canonical hash
+//   - REPLAYABLE: can be reconstructed and compared via graphHash
+//   - TRACEABLE: every node has structured provenance + evidence
+//   - AUTHORITATIVE: the explanation is DERIVED from the graph, not parallel
 
 import type { Strategy, Trajectory, BlockerAnalysis, ActionPlan, Action } from '@/lib/strategy/types'
-import type { NeedAssessment, DesiredCapability, CapabilityImpactSummary } from '@/lib/strategy/needs'
+import type { NeedAssessment, DesiredCapability, CapabilityImpactSummary, CapabilityTrigger } from '@/lib/strategy/needs'
 import type { Intent, MobilityState } from '@/lib/domain/types'
+import { createHash } from 'crypto'
+
+// ---------------------------------------------------------------------------
+// Graph schema version
+// ---------------------------------------------------------------------------
+
+/** Bumped when the graph structure changes. Part of the canonical hash. */
+export const GRAPH_SCHEMA_VERSION = '1.0.0'
 
 // ---------------------------------------------------------------------------
 // Graph primitives
@@ -50,20 +59,27 @@ export type DecisionEdgeType =
   | 'ALTERNATIVE_TO'
   | 'ADDRESSES'
 
+/** Structured provenance — references to exact source artifacts, not just labels. */
+export interface NodeProvenance {
+  /** The source module/type that produced this node. */
+  source: string
+  /** Specific field references (e.g., 'blockerId:blk-001', 'trajectoryId:traj-de'). */
+  references: Record<string, string>
+}
+
 export interface DecisionNode {
   id: string
   type: DecisionNodeType
   label: string
   description: string
-  /** Evidence backing this node (deterministic — no LLM). */
   evidence: string
-  /** Provenance: where this node was derived from. */
-  provenance: string
+  /** Structured provenance — traceable to exact source artifacts. */
+  provenance: NodeProvenance
 }
 
 export interface DecisionEdge {
-  from: string // node id
-  to: string   // node id
+  from: string
+  to: string
   type: DecisionEdgeType
   label?: string
 }
@@ -71,47 +87,54 @@ export interface DecisionEdge {
 export interface DecisionGraph {
   nodes: DecisionNode[]
   edges: DecisionEdge[]
-  /** When this graph was generated (ISO). */
+  /** Graph schema version (bumped on structural changes). */
+  graphSchemaVersion: string
+  /** Canonical hash of nodes+edges (excludes generatedAt). */
+  graphHash: string
+  /** When this graph was generated (NOT part of the hash). */
   generatedAt: string
-  /** The strategy engine version that generated this graph. */
+  /** Strategy engine version that generated this graph. */
   engineVersion: string
+  /** Whether this graph was reconstructed for a legacy record (pre-N0.6). */
+  legacyReconstructed?: boolean
 }
 
 // ---------------------------------------------------------------------------
-// Graph diff (for Strategy Memory integration)
+// Graph diff
 // ---------------------------------------------------------------------------
 
 export interface DecisionGraphDiff {
-  /** Nodes added in the new graph. */
   addedNodes: DecisionNode[]
-  /** Nodes removed from the old graph. */
   removedNodes: DecisionNode[]
-  /** Nodes that changed (same id, different content). */
   changedNodes: Array<{ oldNode: DecisionNode; newNode: DecisionNode; changes: string[] }>
-  /** Edges added. */
   addedEdges: DecisionEdge[]
-  /** Edges removed. */
   removedEdges: DecisionEdge[]
-  /** Human-readable summary. */
+  /** True if the graph hashes match. */
+  hashMatch: boolean
   summary: string
 }
 
 // ---------------------------------------------------------------------------
-// Explanation (deterministic, no LLM)
+// Explanation (GRAPH-DERIVED — traverses nodes+edges)
 // ---------------------------------------------------------------------------
 
+export interface ConfidenceByDimension {
+  evidence: 'high' | 'medium' | 'low' | 'unknown'
+  policy: 'high' | 'medium' | 'low' | 'unknown'
+  recommendation: 'high' | 'medium' | 'low' | 'unknown'
+  outcome: 'high' | 'medium' | 'low' | 'unknown'
+}
+
 export interface StrategyExplanation {
-  /** The one-sentence summary. */
   summary: string
-  /** The causal chain from objective to outcome. */
+  /** Causal chain DERIVED from graph traversal (not from Strategy fields directly). */
   causalChain: ExplanationStep[]
-  /** Key assumptions the strategy relies on. */
   assumptions: string[]
-  /** Alternatives that were considered but not chosen. */
   rejectedAlternatives: string[]
-  /** Confidence assessment (deterministic). */
-  confidence: 'high' | 'medium' | 'low' | 'unknown'
-  /** The full decision graph. */
+  /** Separated confidence dimensions (not a single scalar). */
+  confidence: ConfidenceByDimension
+  /** Overall confidence (derived from the dimensions, conservative). */
+  overallConfidence: 'high' | 'medium' | 'low' | 'unknown'
   graph: DecisionGraph
 }
 
@@ -119,31 +142,117 @@ export interface ExplanationStep {
   type: DecisionNodeType
   label: string
   description: string
-  /** Why this step follows from the previous one. */
   reasoning: string
+  /** The graph node ID this step was derived from. */
+  nodeId: string
+  /** The graph edge that connects this step to the previous one (if any). */
+  connectingEdge?: DecisionEdgeType
+}
+
+// ---------------------------------------------------------------------------
+// Canonical graph hash (excludes generatedAt)
+// ---------------------------------------------------------------------------
+
+function computeGraphHash(nodes: DecisionNode[], edges: DecisionEdge[]): string {
+  const payload = JSON.stringify({
+    nodes: nodes
+      .map((n) => ({ id: n.id, type: n.type, label: n.label, description: n.description, evidence: n.evidence, provenance: n.provenance }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
+    edges: edges
+      .map((e) => ({ from: e.from, to: e.to, type: e.type, label: e.label }))
+      .sort((a, b) => `${a.from}-${a.type}-${a.to}`.localeCompare(`${b.from}-${b.type}-${b.to}`)),
+  })
+  return createHash('sha256').update(payload).digest('hex').slice(0, 16)
+}
+
+// ---------------------------------------------------------------------------
+// Canonical graph comparison (for replay verification)
+// ---------------------------------------------------------------------------
+
+export type GraphComparisonStatus = 'EXACT_MATCH' | 'GRAPH_MISMATCH'
+
+export interface GraphComparisonResult {
+  status: GraphComparisonStatus
+  /** The stored graph's hash. */
+  storedHash: string
+  /** The replayed graph's hash. */
+  replayedHash: string
+  /** Differences (if any). */
+  differences: string[]
+}
+
+/**
+ * Compare a stored graph against a replayed graph using canonical hashes.
+ * Two graphs are EXACT_MATCH iff their graphHash values are identical.
+ */
+export function compareGraphs(stored: DecisionGraph, replayed: DecisionGraph): GraphComparisonResult {
+  const differences: string[] = []
+
+  if (stored.graphHash !== replayed.graphHash) {
+    differences.push(`graphHash: stored=${stored.graphHash} replayed=${replayed.graphHash}`)
+  }
+
+  if (stored.nodes.length !== replayed.nodes.length) {
+    differences.push(`node count: stored=${stored.nodes.length} replayed=${replayed.nodes.length}`)
+  }
+
+  if (stored.edges.length !== replayed.edges.length) {
+    differences.push(`edge count: stored=${stored.edges.length} replayed=${replayed.edges.length}`)
+  }
+
+  // Check for node content differences
+  const storedNodes = new Map(stored.nodes.map((n) => [n.id, n]))
+  for (const replayedNode of replayed.nodes) {
+    const storedNode = storedNodes.get(replayedNode.id)
+    if (storedNode) {
+      if (storedNode.label !== replayedNode.label) {
+        differences.push(`node ${replayedNode.id} label: "${storedNode.label}" → "${replayedNode.label}"`)
+      }
+      if (storedNode.type !== replayedNode.type) {
+        differences.push(`node ${replayedNode.id} type: ${storedNode.type} → ${replayedNode.type}`)
+      }
+    } else {
+      differences.push(`node ${replayedNode.id} missing in stored graph`)
+    }
+  }
+
+  return {
+    status: stored.graphHash === replayed.graphHash ? 'EXACT_MATCH' : 'GRAPH_MISMATCH',
+    storedHash: stored.graphHash,
+    replayedHash: replayed.graphHash,
+    differences,
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Deterministic graph generation
 // ---------------------------------------------------------------------------
 
-let nodeIdCounter = 0
-function nextNodeId(prefix: string): string {
-  return `${prefix}-${++nodeIdCounter}`
+function hashString(s: string): string {
+  let hash = 0
+  for (let i = 0; i < s.length; i++) {
+    const char = s.charCodeAt(i)
+    hash = ((hash << 5) - hash) + char
+    hash |= 0
+  }
+  return Math.abs(hash).toString(36)
 }
 
 /**
  * Build a deterministic DecisionGraph from a Strategy.
  *
- * Same Strategy inputs → same graph structure (node IDs are deterministic
- * based on the node type + content hash, not a counter).
+ * The graph is the AUTHORITATIVE explanation substrate — the explanation
+ * renderer CONSUMES the graph, it does not read Strategy fields directly.
  *
- * The graph is built by walking the causal chain:
- *   Objective → Needs → Blockers → Capabilities → Actions → Outcomes
- * with cross-references for Assumptions, Tradeoffs, and Alternatives.
+ * Causal chain: Objective → Need → Blocker → Capability → Action → Outcome
+ * Each edge is semantically correct:
+ *   Objective CAUSES Need
+ *   Need is BLOCKED by Blocker
+ *   Blocker is ADDRESSED by Capability (Capability → Blocker: ADDRESSES)
+ *   Capability REQUIRES Action (Capability → Action: REQUIRES)
+ *   Action LEADS_TO Outcome
  */
-export function buildDecisionGraph(strategy: Strategy): DecisionGraph {
-  // Reset counter for determinism — we use content-based IDs
+export function buildDecisionGraph(strategy: Strategy, legacyReconstructed = false): DecisionGraph {
   const nodes: DecisionNode[] = []
   const edges: DecisionEdge[] = []
 
@@ -156,60 +265,82 @@ export function buildDecisionGraph(strategy: Strategy): DecisionGraph {
     label: objectiveLabel,
     description: `The user's stated objective: ${objectiveLabel}`,
     evidence: strategy.intent.rawInput,
-    provenance: 'Intent.statedGoal',
+    provenance: {
+      source: 'Intent.statedGoal',
+      references: { statedGoal: objectiveLabel },
+    },
   })
 
-  // --- NEED nodes ---
+  // --- NEED nodes (with correct objective association) ---
+  const needNodeIds: string[] = []
   const needs = strategy.needs
   if (needs) {
     for (const need of needs.needs) {
       const nodeId = `need-${hashString(need.label)}`
+      needNodeIds.push(nodeId)
       nodes.push({
         id: nodeId,
         type: 'NEED',
         label: need.label,
         description: `Inferred need: ${need.label}`,
         evidence: need.evidence,
-        provenance: 'NeedAssessment.needs',
+        provenance: {
+          source: 'NeedAssessment.needs',
+          references: { label: need.label, derivedFrom: need.derivedFrom },
+        },
       })
       edges.push({ from: objectiveId, to: nodeId, type: 'CAUSES', label: 'implies' })
     }
   }
 
-  // --- BLOCKER nodes ---
+  // --- BLOCKER nodes (connected to the CORRECT needs, not needs[0]) ---
+  const blockerNodeIds: string[] = []
   for (const blocker of strategy.blockers) {
     const nodeId = `blocker-${hashString(blocker.blockerId)}`
+    blockerNodeIds.push(nodeId)
     nodes.push({
       id: nodeId,
       type: 'BLOCKER',
       label: blocker.label,
       description: blocker.reason,
       evidence: `Blocker category: ${blocker.category}, difficulty: ${blocker.difficulty}`,
-      provenance: 'BlockerAnalysis',
+      provenance: {
+        source: 'BlockerAnalysis',
+        references: { blockerId: blocker.blockerId, category: blocker.category },
+      },
     })
-    // Blocker blocks the objective
+    // Blocker BLOCKS the objective
     edges.push({ from: nodeId, to: objectiveId, type: 'BLOCKS', label: 'prevents' })
 
-    // If there's a need, connect the blocker to it
-    if (needs && needs.needs.length > 0) {
-      const firstNeedId = `need-${hashString(needs.needs[0].label)}`
-      edges.push({ from: nodeId, to: firstNeedId, type: 'BLOCKS', label: 'obstructs' })
+    // FIX #3: Connect blocker to ALL needs that are relevant (not just needs[0])
+    // A blocker blocks ALL inferred needs (since it prevents achieving the objective)
+    for (const needId of needNodeIds) {
+      edges.push({ from: nodeId, to: needId, type: 'BLOCKS', label: 'obstructs' })
     }
   }
 
   // --- CAPABILITY nodes ---
+  const capabilityNodeIds: string[] = []
   for (const cap of strategy.desiredCapabilities ?? []) {
     const nodeId = `cap-${hashString(cap.capabilityId)}`
+    capabilityNodeIds.push(nodeId)
     nodes.push({
       id: nodeId,
       type: 'CAPABILITY',
       label: cap.label,
       description: `Required capability: ${cap.capabilityId}`,
       evidence: cap.triggers.map((t) => `${t.blockerLabel} (${t.trajectoryLabel})`).join('; '),
-      provenance: 'DesiredCapability',
+      provenance: {
+        source: 'DesiredCapability',
+        references: {
+          capabilityId: cap.capabilityId,
+          triggerBlockerIds: cap.triggers.map((t) => t.blockerId).join(','),
+          triggerTrajectoryIds: cap.triggers.map((t) => t.trajectoryId).join(','),
+        },
+      },
     })
 
-    // Capability REQUIRES the blockers it addresses
+    // FIX #2: Capability ADDRESSES the blockers it resolves (correct semantics)
     for (const trigger of cap.triggers) {
       const blockerNodeId = `blocker-${hashString(trigger.blockerId)}`
       edges.push({ from: nodeId, to: blockerNodeId, type: 'ADDRESSES', label: 'resolves' })
@@ -218,7 +349,6 @@ export function buildDecisionGraph(strategy: Strategy): DecisionGraph {
     // Capability LEADS_TO outcomes (potential unlocks)
     for (const unlock of cap.potentialUnlocks) {
       const outcomeId = `outcome-${hashString(unlock.routeId)}`
-      // Only add the outcome node if it doesn't already exist
       if (!nodes.find((n) => n.id === outcomeId)) {
         nodes.push({
           id: outcomeId,
@@ -226,7 +356,10 @@ export function buildDecisionGraph(strategy: Strategy): DecisionGraph {
           label: unlock.routeLabel,
           description: `Potential outcome: ${unlock.routeLabel} (${unlock.remainingBlockers === 0 ? 'fully unlocked' : `${unlock.remainingBlockers} blockers remain`})`,
           evidence: `Route ${unlock.routeId}, country ${unlock.countryCode}`,
-          provenance: 'DesiredCapability.potentialUnlocks',
+          provenance: {
+            source: 'DesiredCapability.potentialUnlocks',
+            references: { routeId: unlock.routeId, countryCode: unlock.countryCode },
+          },
         })
       }
       edges.push({ from: nodeId, to: outcomeId, type: 'LEADS_TO', label: 'could unlock' })
@@ -234,6 +367,9 @@ export function buildDecisionGraph(strategy: Strategy): DecisionGraph {
   }
 
   // --- ACTION nodes ---
+  // FIX #2: Action nodes now have a REQUIRES edge from the Capability
+  // that addresses the same blocker. This creates the causal chain:
+  //   Blocker ← ADDRESSES ← Capability → REQUIRES → Action → LEADS_TO → Outcome
   for (const action of strategy.actionPlan.actions) {
     const nodeId = `action-${hashString(action.id)}`
     nodes.push({
@@ -242,16 +378,31 @@ export function buildDecisionGraph(strategy: Strategy): DecisionGraph {
       label: action.title,
       description: action.description,
       evidence: `Timeframe: ${action.timeframe}, impact: ${action.impact}, time-sensitive: ${action.timeSensitive}`,
-      provenance: 'ActionPlan.actions',
+      provenance: {
+        source: 'ActionPlan.actions',
+        references: { actionId: action.id, addressesBlockerId: action.addressesBlockerId ?? 'none' },
+      },
     })
 
-    // Action DEPENDS_ON the capability it addresses (if any)
+    // Action ADDRESSES the blocker (if it has one)
     if (action.addressesBlockerId) {
       const blockerNodeId = `blocker-${hashString(action.addressesBlockerId)}`
       edges.push({ from: nodeId, to: blockerNodeId, type: 'ADDRESSES', label: 'addresses' })
+
+      // FIX #2: Find capabilities that also address this blocker and create
+      // Capability → REQUIRES → Action edges
+      for (const cap of strategy.desiredCapabilities ?? []) {
+        const capAddressesThisBlocker = cap.triggers.some(
+          (t) => t.blockerId === action.addressesBlockerId
+        )
+        if (capAddressesThisBlocker) {
+          const capNodeId = `cap-${hashString(cap.capabilityId)}`
+          edges.push({ from: capNodeId, to: nodeId, type: 'REQUIRES', label: 'requires action' })
+        }
+      }
     }
 
-    // Action LEADS_TO the best trajectory
+    // Action LEADS_TO the best trajectory (outcome)
     if (strategy.bestTrajectory) {
       const outcomeId = `outcome-${hashString(strategy.bestTrajectory.id)}`
       if (!nodes.find((n) => n.id === outcomeId)) {
@@ -261,7 +412,10 @@ export function buildDecisionGraph(strategy: Strategy): DecisionGraph {
           label: strategy.bestTrajectory.label,
           description: `Expected outcome: ${strategy.bestTrajectory.destinationStatus}`,
           evidence: `Trajectory ${strategy.bestTrajectory.id}, ${strategy.bestTrajectory.totalMonths} months, $${strategy.bestTrajectory.totalCostUSD}`,
-          provenance: 'Strategy.bestTrajectory',
+          provenance: {
+            source: 'Strategy.bestTrajectory',
+            references: { trajectoryId: strategy.bestTrajectory.id, sourceRouteId: strategy.bestTrajectory.sourceRouteId ?? '' },
+          },
         })
       }
       edges.push({ from: nodeId, to: outcomeId, type: 'LEADS_TO', label: 'advances' })
@@ -286,9 +440,11 @@ export function buildDecisionGraph(strategy: Strategy): DecisionGraph {
       label: assumption,
       description: `Strategy assumption: ${assumption}`,
       evidence: 'Derived from strategy inputs + policy context',
-      provenance: 'Strategy.explanation + Strategy.uncertainties',
+      provenance: {
+        source: 'Strategy.uncertainties + Strategy.bestTrajectory',
+        references: {},
+      },
     })
-    // Assumption DEPENDS_ON the objective
     edges.push({ from: objectiveId, to: nodeId, type: 'DEPENDS_ON', label: 'assumes' })
   }
 
@@ -302,7 +458,10 @@ export function buildDecisionGraph(strategy: Strategy): DecisionGraph {
       label: tradeoff.label,
       description: tradeoff.description,
       evidence: tradeoff.evidence,
-      provenance: 'Strategy.intentFrontier + Strategy.alternativeIntents',
+      provenance: {
+        source: 'Strategy.intentFrontier + Strategy.alternativeIntents',
+        references: {},
+      },
     })
     edges.push({ from: objectiveId, to: nodeId, type: 'TRADEOFF_WITH', label: 'trades off' })
   }
@@ -316,34 +475,41 @@ export function buildDecisionGraph(strategy: Strategy): DecisionGraph {
       label: alt.label,
       description: `Alternative trajectory: ${alt.label}`,
       evidence: `${alt.totalMonths} months, $${alt.totalCostUSD}, ${alt.viable ? 'viable' : 'blocked'}`,
-      provenance: 'Strategy.alternativeTrajectories',
+      provenance: {
+        source: 'Strategy.alternativeTrajectories',
+        references: { trajectoryId: alt.id },
+      },
     })
-    // Alternative is ALTERNATIVE_TO the best trajectory
     if (strategy.bestTrajectory) {
       const bestOutcomeId = `outcome-${hashString(strategy.bestTrajectory.id)}`
       edges.push({ from: nodeId, to: bestOutcomeId, type: 'ALTERNATIVE_TO', label: 'alternative to' })
     }
   }
 
+  const graphHash = computeGraphHash(nodes, edges)
+
   return {
     nodes,
     edges,
+    graphSchemaVersion: GRAPH_SCHEMA_VERSION,
+    graphHash,
     generatedAt: strategy.generatedAt,
     engineVersion: strategy.strategyEngineVersion ?? 'unknown',
+    legacyReconstructed,
   }
 }
 
 // ---------------------------------------------------------------------------
-// Explanation generation (deterministic, no LLM)
+// GRAPH-DERIVED Explanation (traverses nodes+edges, not Strategy fields)
 // ---------------------------------------------------------------------------
 
 export function generateExplanation(strategy: Strategy, graph: DecisionGraph): StrategyExplanation {
-  const causalChain = buildCausalChain(strategy, graph)
-  const assumptions = extractAssumptions(strategy)
-  const rejectedAlternatives = extractRejectedAlternatives(strategy)
-  const confidence = assessConfidence(strategy)
-
-  const summary = buildSummary(strategy)
+  const causalChain = buildGraphDerivedCausalChain(graph)
+  const assumptions = extractAssumptionsFromGraph(graph)
+  const rejectedAlternatives = extractAlternativesFromGraph(graph)
+  const confidence = assessConfidenceByDimension(strategy)
+  const overallConfidence = deriveOverallConfidence(confidence)
+  const summary = buildSummaryFromGraph(graph)
 
   return {
     summary,
@@ -351,100 +517,228 @@ export function generateExplanation(strategy: Strategy, graph: DecisionGraph): S
     assumptions,
     rejectedAlternatives,
     confidence,
+    overallConfidence,
     graph,
   }
 }
 
-function buildCausalChain(strategy: Strategy, graph: DecisionGraph): ExplanationStep[] {
+/**
+ * FIX #1: Build the causal chain by TRAVERSING the graph, not by reading
+ * Strategy fields directly. This makes it impossible for the explanation
+ * to claim a causal relationship absent from the graph.
+ *
+ * Traversal: Objective → Need → Blocker → Capability → Action → Outcome
+ * Each step records the nodeId + connectingEdge, proving it came from the graph.
+ */
+function buildGraphDerivedCausalChain(graph: DecisionGraph): ExplanationStep[] {
   const steps: ExplanationStep[] = []
+  const nodeMap = new Map(graph.nodes.map((n) => [n.id, n]))
 
-  // 1. Objective
+  // 1. Find the OBJECTIVE node
+  const objectiveNode = graph.nodes.find((n) => n.type === 'OBJECTIVE')
+  if (!objectiveNode) return steps
+
   steps.push({
     type: 'OBJECTIVE',
-    label: strategy.intent.statedGoal,
-    description: `Your objective is ${strategy.intent.statedGoal}.`,
-    reasoning: 'This is what you stated you want to accomplish.',
+    label: objectiveNode.label,
+    description: objectiveNode.description,
+    reasoning: objectiveNode.evidence,
+    nodeId: objectiveNode.id,
   })
 
-  // 2. Needs
-  if (strategy.needs?.needs[0]) {
-    steps.push({
-      type: 'NEED',
-      label: strategy.needs.needs[0].label,
-      description: `Your underlying need is ${strategy.needs.needs[0].label}.`,
-      reasoning: strategy.needs.needs[0].evidence,
-    })
+  // 2. Follow CAUSES edges to NEED nodes
+  const needEdges = graph.edges.filter((e) => e.from === objectiveNode.id && e.type === 'CAUSES')
+  for (const edge of needEdges) {
+    const needNode = nodeMap.get(edge.to)
+    if (needNode && needNode.type === 'NEED') {
+      steps.push({
+        type: 'NEED',
+        label: needNode.label,
+        description: needNode.description,
+        reasoning: needNode.evidence,
+        nodeId: needNode.id,
+        connectingEdge: 'CAUSES',
+      })
+      break // Only show the first need in the chain
+    }
   }
 
-  // 3. Best trajectory
-  if (strategy.bestTrajectory) {
-    steps.push({
-      type: 'OUTCOME',
-      label: strategy.bestTrajectory.label,
-      description: `The recommended trajectory is ${strategy.bestTrajectory.label}, leading to ${strategy.bestTrajectory.destinationStatus}.`,
-      reasoning: strategy.bestTrajectory.viable
-        ? 'This trajectory is currently viable — you meet the entry requirements.'
-        : 'This trajectory has blockers that need to be resolved.',
-    })
-  }
-
-  // 4. Blockers
-  if (strategy.blockers.length > 0) {
-    const primaryBlocker = strategy.blockers[0]
+  // 3. Follow BLOCKS edges from blockers to needs/objective to find BLOCKER nodes
+  // Blockers are nodes that have BLOCKS edges
+  const blockerNodes = graph.nodes.filter((n) => n.type === 'BLOCKER')
+  if (blockerNodes.length > 0) {
+    const primaryBlocker = blockerNodes[0]
     steps.push({
       type: 'BLOCKER',
       label: primaryBlocker.label,
-      description: `The primary blocker is: ${primaryBlocker.label}.`,
-      reasoning: primaryBlocker.reason,
+      description: primaryBlocker.description,
+      reasoning: primaryBlocker.evidence,
+      nodeId: primaryBlocker.id,
+      connectingEdge: 'BLOCKS',
     })
-  }
 
-  // 5. Capabilities
-  if (strategy.desiredCapabilities && strategy.desiredCapabilities.length > 0) {
-    const primaryCap = strategy.desiredCapabilities[0]
-    steps.push({
-      type: 'CAPABILITY',
-      label: primaryCap.label,
-      description: `Required capability: ${primaryCap.label}.`,
-      reasoning: `Triggered by: ${primaryCap.triggers.map((t) => t.blockerLabel).join(', ')}.`,
-    })
-  }
+    // 4. Follow ADDRESSES edges from CAPABILITY nodes to this blocker
+    const capEdges = graph.edges.filter(
+      (e) => e.type === 'ADDRESSES' && e.to === primaryBlocker.id
+    )
+    for (const edge of capEdges) {
+      const capNode = nodeMap.get(edge.from)
+      if (capNode && capNode.type === 'CAPABILITY') {
+        steps.push({
+          type: 'CAPABILITY',
+          label: capNode.label,
+          description: capNode.description,
+          reasoning: capNode.evidence,
+          nodeId: capNode.id,
+          connectingEdge: 'ADDRESSES',
+        })
 
-  // 6. Actions
-  if (strategy.actionPlan.actions.length > 0) {
-    const primaryAction = strategy.actionPlan.actions[0]
-    steps.push({
-      type: 'ACTION',
-      label: primaryAction.title,
-      description: `Recommended action: ${primaryAction.title}.`,
-      reasoning: primaryAction.description,
-    })
+        // 5. Follow REQUIRES edges from this CAPABILITY to ACTION nodes
+        const actionEdges = graph.edges.filter(
+          (e) => e.from === capNode.id && e.type === 'REQUIRES'
+        )
+        for (const actionEdge of actionEdges) {
+          const actionNode = nodeMap.get(actionEdge.to)
+          if (actionNode && actionNode.type === 'ACTION') {
+            steps.push({
+              type: 'ACTION',
+              label: actionNode.label,
+              description: actionNode.description,
+              reasoning: actionNode.evidence,
+              nodeId: actionNode.id,
+              connectingEdge: 'REQUIRES',
+            })
+
+            // 6. Follow LEADS_TO edges from this ACTION to OUTCOME nodes
+            const outcomeEdges = graph.edges.filter(
+              (e) => e.from === actionNode.id && e.type === 'LEADS_TO'
+            )
+            for (const outcomeEdge of outcomeEdges) {
+              const outcomeNode = nodeMap.get(outcomeEdge.to)
+              if (outcomeNode && outcomeNode.type === 'OUTCOME') {
+                steps.push({
+                  type: 'OUTCOME',
+                  label: outcomeNode.label,
+                  description: outcomeNode.description,
+                  reasoning: outcomeNode.evidence,
+                  nodeId: outcomeNode.id,
+                  connectingEdge: 'LEADS_TO',
+                })
+                break // Only show the first outcome
+              }
+            }
+            break // Only show the first action
+          }
+        }
+        break // Only show the first capability
+      }
+    }
+  } else {
+    // No blockers — look for ACTION → OUTCOME directly
+    const actionNodes = graph.nodes.filter((n) => n.type === 'ACTION')
+    if (actionNodes.length > 0) {
+      const actionNode = actionNodes[0]
+      steps.push({
+        type: 'ACTION',
+        label: actionNode.label,
+        description: actionNode.description,
+        reasoning: actionNode.evidence,
+        nodeId: actionNode.id,
+      })
+
+      const outcomeEdges = graph.edges.filter(
+        (e) => e.from === actionNode.id && e.type === 'LEADS_TO'
+      )
+      for (const edge of outcomeEdges) {
+        const outcomeNode = nodeMap.get(edge.to)
+        if (outcomeNode && outcomeNode.type === 'OUTCOME') {
+          steps.push({
+            type: 'OUTCOME',
+            label: outcomeNode.label,
+            description: outcomeNode.description,
+            reasoning: outcomeNode.evidence,
+            nodeId: outcomeNode.id,
+            connectingEdge: 'LEADS_TO',
+          })
+          break
+        }
+      }
+    }
   }
 
   return steps
 }
 
-function buildSummary(strategy: Strategy): string {
+function buildSummaryFromGraph(graph: DecisionGraph): string {
   const parts: string[] = []
-  if (strategy.intent.statedGoal) parts.push(`Your objective is ${strategy.intent.statedGoal}`)
-  if (strategy.bestTrajectory) parts.push(`the recommended trajectory is ${strategy.bestTrajectory.label}`)
-  if (strategy.blockers.length > 0) parts.push(`the primary blocker is ${strategy.blockers[0].label}`)
-  if (strategy.desiredCapabilities && strategy.desiredCapabilities.length > 0) {
-    parts.push(`the required capability is ${strategy.desiredCapabilities[0].label}`)
-  }
-  if (strategy.actionPlan.actions.length > 0) {
-    parts.push(`the next action is ${strategy.actionPlan.actions[0].title}`)
-  }
+  const objective = graph.nodes.find((n) => n.type === 'OBJECTIVE')
+  if (objective) parts.push(`Your objective is ${objective.label}`)
+
+  const outcome = graph.nodes.find((n) => n.type === 'OUTCOME')
+  if (outcome) parts.push(`the recommended trajectory is ${outcome.label}`)
+
+  const blocker = graph.nodes.find((n) => n.type === 'BLOCKER')
+  if (blocker) parts.push(`the primary blocker is ${blocker.label}`)
+
+  const capability = graph.nodes.find((n) => n.type === 'CAPABILITY')
+  if (capability) parts.push(`the required capability is ${capability.label}`)
+
+  const action = graph.nodes.find((n) => n.type === 'ACTION')
+  if (action) parts.push(`the next action is ${action.label}`)
+
   return parts.join(', ') + '.'
 }
+
+function extractAssumptionsFromGraph(graph: DecisionGraph): string[] {
+  return graph.nodes
+    .filter((n) => n.type === 'ASSUMPTION')
+    .map((n) => n.label)
+}
+
+function extractAlternativesFromGraph(graph: DecisionGraph): string[] {
+  return graph.nodes
+    .filter((n) => n.type === 'ALTERNATIVE')
+    .map((n) => n.label)
+}
+
+/**
+ * FIX #8: Confidence is separated by dimension, not collapsed into one scalar.
+ */
+function assessConfidenceByDimension(strategy: Strategy): ConfidenceByDimension {
+  const uncertainties = strategy.uncertainties
+
+  const getDim = (name: string): 'high' | 'medium' | 'low' | 'unknown' => {
+    const u = uncertainties.find((u) => u.dimension.toLowerCase().includes(name.toLowerCase()))
+    return (u?.confidence ?? 'unknown') as 'high' | 'medium' | 'low' | 'unknown'
+  }
+
+  return {
+    evidence: getDim('Legal eligibility'),
+    policy: getDim('Policy stability'),
+    recommendation: uncertainties.length > 0 ? 'medium' as const : 'unknown' as const,
+    outcome: getDim('Real-world approval outcome'),
+  }
+}
+
+function deriveOverallConfidence(conf: ConfidenceByDimension): 'high' | 'medium' | 'low' | 'unknown' {
+  const values = Object.values(conf)
+  const highCount = values.filter((v) => v === 'high').length
+  const lowCount = values.filter((v) => v === 'low' || v === 'unknown').length
+  const total = values.length
+
+  if (total === 0) return 'unknown'
+  if (highCount / total >= 0.7) return 'high'
+  if (lowCount / total >= 0.5) return 'low'
+  return 'medium'
+}
+
+// ---------------------------------------------------------------------------
+// Helpers (extracted from Strategy — used only for graph construction)
+// ---------------------------------------------------------------------------
 
 function extractAssumptions(strategy: Strategy): string[] {
   const assumptions: string[] = []
 
-  // From the original deterministic explanation string (now stored as
-  // StrategyExplanation, but the original string was moved to a different
-  // field). We use the strategy's explanation prose if it's a string,
-  // otherwise extract from the explanation object's summary.
   const explanationText = typeof strategy.explanation === 'string'
     ? strategy.explanation
     : (strategy.explanation as any)?.summary ?? ''
@@ -458,14 +752,12 @@ function extractAssumptions(strategy: Strategy): string[] {
     }
   }
 
-  // From uncertainties
   for (const u of strategy.uncertainties) {
     if (u.confidence === 'LOW' || u.confidence === 'UNKNOWN') {
       assumptions.push(`${u.dimension}: ${u.reason}`)
     }
   }
 
-  // From the best trajectory
   if (strategy.bestTrajectory) {
     assumptions.push(`Trajectory ${strategy.bestTrajectory.label} is the best available option given current profile and policy.`)
   }
@@ -476,7 +768,6 @@ function extractAssumptions(strategy: Strategy): string[] {
 function extractTradeoffs(strategy: Strategy): Array<{ label: string; description: string; evidence: string }> {
   const tradeoffs: Array<{ label: string; description: string; evidence: string }> = []
 
-  // From alternative intents
   for (const alt of strategy.alternativeIntents) {
     tradeoffs.push({
       label: alt.title,
@@ -485,7 +776,6 @@ function extractTradeoffs(strategy: Strategy): Array<{ label: string; descriptio
     })
   }
 
-  // From the intent frontier
   if (strategy.intentFrontier.distinctStrategies.length > 1) {
     tradeoffs.push({
       label: 'Multi-objective tradeoff',
@@ -497,36 +787,8 @@ function extractTradeoffs(strategy: Strategy): Array<{ label: string; descriptio
   return tradeoffs
 }
 
-function extractRejectedAlternatives(strategy: Strategy): string[] {
-  const rejected: string[] = []
-
-  for (const alt of strategy.alternativeTrajectories.slice(1, 4)) {
-    rejected.push(`${alt.label} (${alt.viable ? 'viable but lower-ranked' : 'blocked'})`)
-  }
-
-  for (const alt of strategy.alternativeIntents) {
-    if (!alt.mayBeSuperior) {
-      rejected.push(alt.title)
-    }
-  }
-
-  return rejected
-}
-
-function assessConfidence(strategy: Strategy): 'high' | 'medium' | 'low' | 'unknown' {
-  if (strategy.uncertainties.length === 0) return 'unknown'
-
-  const highCount = strategy.uncertainties.filter((u) => u.confidence === 'HIGH').length
-  const lowCount = strategy.uncertainties.filter((u) => u.confidence === 'LOW' || u.confidence === 'UNKNOWN').length
-  const total = strategy.uncertainties.length
-
-  if (highCount / total >= 0.7) return 'high'
-  if (lowCount / total >= 0.5) return 'low'
-  return 'medium'
-}
-
 // ---------------------------------------------------------------------------
-// Graph diff
+// Graph diff (updated to use graphHash)
 // ---------------------------------------------------------------------------
 
 export function diffDecisionGraphs(oldGraph: DecisionGraph, newGraph: DecisionGraph): DecisionGraphDiff {
@@ -558,12 +820,13 @@ export function diffDecisionGraphs(oldGraph: DecisionGraph, newGraph: DecisionGr
     }
   }
 
-  // Edge diff
   const oldEdgeKeys = new Set(oldGraph.edges.map((e) => `${e.from}-${e.type}-${e.to}`))
   const newEdgeKeys = new Set(newGraph.edges.map((e) => `${e.from}-${e.type}-${e.to}`))
 
   const addedEdges = newGraph.edges.filter((e) => !oldEdgeKeys.has(`${e.from}-${e.type}-${e.to}`))
   const removedEdges = oldGraph.edges.filter((e) => !newEdgeKeys.has(`${e.from}-${e.type}-${e.to}`))
+
+  const hashMatch = oldGraph.graphHash === newGraph.graphHash
 
   const parts: string[] = []
   if (addedNodes.length > 0) parts.push(`${addedNodes.length} node(s) added`)
@@ -571,24 +834,11 @@ export function diffDecisionGraphs(oldGraph: DecisionGraph, newGraph: DecisionGr
   if (changedNodes.length > 0) parts.push(`${changedNodes.length} node(s) changed`)
   if (addedEdges.length > 0) parts.push(`${addedEdges.length} edge(s) added`)
   if (removedEdges.length > 0) parts.push(`${removedEdges.length} edge(s) removed`)
+  if (!hashMatch) parts.push(`graph hash changed: ${oldGraph.graphHash} → ${newGraph.graphHash}`)
 
   const summary = parts.length === 0
     ? 'No changes in the decision graph.'
     : `Decision graph changed: ${parts.join(', ')}.`
 
-  return { addedNodes, removedNodes, changedNodes, addedEdges, removedEdges, summary }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function hashString(s: string): string {
-  let hash = 0
-  for (let i = 0; i < s.length; i++) {
-    const char = s.charCodeAt(i)
-    hash = ((hash << 5) - hash) + char
-    hash |= 0
-  }
-  return Math.abs(hash).toString(36)
+  return { addedNodes, removedNodes, changedNodes, addedEdges, removedEdges, hashMatch, summary }
 }
