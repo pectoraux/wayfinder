@@ -158,7 +158,7 @@ function toSummary(record: any): StrategyRecordSummary {
 // ---------------------------------------------------------------------------
 
 describe('Strategy change cause classification', () => {
-  it('classifies USER_PROFILE_CHANGED when stateVersion differs', () => {
+  it('classifies USER_PROFILE_CHANGED when stateVersion differs', async () => {
     const prev: StrategyRecordSummary = {
       id: 'prev', stateVersion: 1, intentVersion: 1, objectiveId: 'income',
       runtimePolicyHash: 'hash', strategyEngineVersion: '1.0.0', trigger: 'OBJECTIVE_ADOPT',
@@ -178,7 +178,7 @@ describe('Strategy change cause classification', () => {
     expect(classifyStrategyChangeCause(prev, next)).toBe('USER_INTENT_CHANGED')
   })
 
-  it('classifies OBJECTIVE_CHANGED when objectiveId differs', () => {
+  it('classifies OBJECTIVE_CHANGED when objectiveId differs', async () => {
     const prev: StrategyRecordSummary = {
       id: 'prev', stateVersion: 1, intentVersion: 1, objectiveId: 'income',
       runtimePolicyHash: 'hash', strategyEngineVersion: '1.0.0', trigger: 'OBJECTIVE_ADOPT',
@@ -188,7 +188,7 @@ describe('Strategy change cause classification', () => {
     expect(classifyStrategyChangeCause(prev, next)).toBe('OBJECTIVE_CHANGED')
   })
 
-  it('classifies POLICY_CHANGED when runtimePolicyHash differs', () => {
+  it('classifies POLICY_CHANGED when runtimePolicyHash differs', async () => {
     const prev: StrategyRecordSummary = {
       id: 'prev', stateVersion: 1, intentVersion: 1, objectiveId: 'income',
       runtimePolicyHash: 'hash-a', strategyEngineVersion: '1.0.0', trigger: 'OBJECTIVE_ADOPT',
@@ -198,7 +198,7 @@ describe('Strategy change cause classification', () => {
     expect(classifyStrategyChangeCause(prev, next)).toBe('POLICY_CHANGED')
   })
 
-  it('classifies ENGINE_CHANGED when strategyEngineVersion differs', () => {
+  it('classifies ENGINE_CHANGED when strategyEngineVersion differs', async () => {
     const prev: StrategyRecordSummary = {
       id: 'prev', stateVersion: 1, intentVersion: 1, objectiveId: 'income',
       runtimePolicyHash: 'hash', strategyEngineVersion: '1.0.0', trigger: 'OBJECTIVE_ADOPT',
@@ -208,7 +208,7 @@ describe('Strategy change cause classification', () => {
     expect(classifyStrategyChangeCause(prev, next)).toBe('ENGINE_CHANGED')
   })
 
-  it('classifies MANUAL_ADOPTION when trigger=OBJECTIVE_ADOPT and inputs match', () => {
+  it('classifies MANUAL_ADOPTION when trigger=OBJECTIVE_ADOPT and inputs match', async () => {
     const prev: StrategyRecordSummary = {
       id: 'prev', stateVersion: 1, intentVersion: 1, objectiveId: 'income',
       runtimePolicyHash: 'hash', strategyEngineVersion: '1.0.0', trigger: 'OBJECTIVE_ADOPT',
@@ -218,7 +218,7 @@ describe('Strategy change cause classification', () => {
     expect(classifyStrategyChangeCause(prev, next)).toBe('MANUAL_ADOPTION')
   })
 
-  it('classifies UNKNOWN when no previous record and trigger is not OBJECTIVE_ADOPT', () => {
+  it('classifies UNKNOWN when no previous record and trigger is not OBJECTIVE_ADOPT', async () => {
     const next: StrategyRecordSummary = {
       id: 'next', stateVersion: 1, intentVersion: 1, objectiveId: 'income',
       runtimePolicyHash: 'hash', strategyEngineVersion: '1.0.0', trigger: 'intake',
@@ -227,7 +227,7 @@ describe('Strategy change cause classification', () => {
     expect(classifyStrategyChangeCause(null, next)).toBe('UNKNOWN')
   })
 
-  it('trusts the stored changeReason when set explicitly', () => {
+  it('trusts the stored changeReason when set explicitly', async () => {
     const prev: StrategyRecordSummary = {
       id: 'prev', stateVersion: 1, intentVersion: 1, objectiveId: 'income',
       runtimePolicyHash: 'hash', strategyEngineVersion: '1.0.0', trigger: 'OBJECTIVE_ADOPT',
@@ -240,7 +240,7 @@ describe('Strategy change cause classification', () => {
     expect(classifyStrategyChangeCause(prev, next)).toBe('POLICY_CHANGED')
   })
 
-  it('classifies RECOMPUTATION when all inputs match and trigger is not adoption', () => {
+  it('classifies RECOMPUTATION when all inputs match and trigger is not adoption', async () => {
     const prev: StrategyRecordSummary = {
       id: 'prev', stateVersion: 1, intentVersion: 1, objectiveId: 'income',
       runtimePolicyHash: 'hash', strategyEngineVersion: '1.0.0', trigger: 'intake',
@@ -256,8 +256,8 @@ describe('Strategy change cause classification', () => {
 // ---------------------------------------------------------------------------
 
 describe('Strategy diff construction', () => {
-  it('buildStrategyDiff returns exact=true for identical strategies', () => {
-    const strategy = buildStrategy(baseState, baseIntent, baseRoutes)
+  it('buildStrategyDiff returns exact=true for identical strategies', async () => {
+    const strategy = await buildStrategy(baseState, baseIntent, baseRoutes)
     const clone = JSON.parse(JSON.stringify(strategy))
     const diff = buildStrategyDiff(clone, strategy)
     expect(diff.comparison.exact).toBe(true)
@@ -265,8 +265,8 @@ describe('Strategy diff construction', () => {
     expect(diff.blockersChanged).toBe(false)
   })
 
-  it('buildStrategyDiff detects bestTrajectory change', () => {
-    const strategy = buildStrategy(baseState, baseIntent, baseRoutes)
+  it('buildStrategyDiff detects bestTrajectory change', async () => {
+    const strategy = await buildStrategy(baseState, baseIntent, baseRoutes)
     const mutated = JSON.parse(JSON.stringify(strategy))
     mutated.bestTrajectory = { ...mutated.bestTrajectory, id: 'different', label: 'Different' }
     const diff = buildStrategyDiff(strategy, mutated)
@@ -274,8 +274,8 @@ describe('Strategy diff construction', () => {
     expect(diff.comparison.exact).toBe(false)
   })
 
-  it('buildStrategyDiff with null previous returns all differences', () => {
-    const strategy = buildStrategy(baseState, baseIntent, baseRoutes)
+  it('buildStrategyDiff with null previous returns all differences', async () => {
+    const strategy = await buildStrategy(baseState, baseIntent, baseRoutes)
     const diff = buildStrategyDiff(null, strategy)
     // When there's no previous, every dimension is "new" — but we don't
     // count that as a mismatch. The diff flags what changed.
@@ -289,8 +289,8 @@ describe('Strategy diff construction', () => {
 // ---------------------------------------------------------------------------
 
 describe('Strategy change explanation', () => {
-  it('explains a profile change with trajectory change', () => {
-    const strategy1 = buildStrategy(baseState, baseIntent, baseRoutes)
+  it('explains a profile change with trajectory change', async () => {
+    const strategy1 = await buildStrategy(baseState, baseIntent, baseRoutes)
     const strategy2 = JSON.parse(JSON.stringify(strategy1))
     strategy2.bestTrajectory = { ...strategy2.bestTrajectory, label: 'New Trajectory' }
 
@@ -303,8 +303,8 @@ describe('Strategy change explanation', () => {
     expect(explanation).toContain('New Trajectory')
   })
 
-  it('explains a first strategy (no previous)', () => {
-    const strategy = buildStrategy(baseState, baseIntent, baseRoutes)
+  it('explains a first strategy (no previous)', async () => {
+    const strategy = await buildStrategy(baseState, baseIntent, baseRoutes)
     const change = buildStrategyChange(null, {
       id: 'next', stateVersion: 1, intentVersion: 1, objectiveId: 'income',
       runtimePolicyHash: 'h', strategyEngineVersion: '1.0.0', trigger: 'OBJECTIVE_ADOPT',
@@ -316,7 +316,7 @@ describe('Strategy change explanation', () => {
     expect(explanation).toContain('initial strategy')
   })
 
-  it('STRATEGY_CHANGE_CAUSE_LABELS has all 8 causes', () => {
+  it('STRATEGY_CHANGE_CAUSE_LABELS has all 8 causes', async () => {
     const causes = Object.keys(STRATEGY_CHANGE_CAUSE_LABELS)
     expect(causes).toContain('USER_PROFILE_CHANGED')
     expect(causes).toContain('USER_INTENT_CHANGED')
@@ -372,7 +372,7 @@ describe('Strategy history (DB-backed)', () => {
     const ctx = await buildCanonicalPlanningContext({
       state, intent, asOfDate: '2025-06-01',
     })
-    const strategy = buildStrategy(state, intent, ctx.routes, ctx)
+    const strategy = await buildStrategy(state, intent, ctx.routes, ctx)
     // Allow overriding the policy hash for testing POLICY_CHANGED
     if (opts?.policyHash) {
       strategy.policyContext = { ...strategy.policyContext!, runtimeHash: opts.policyHash }
@@ -489,7 +489,7 @@ describe('Strategy history (DB-backed)', () => {
     const ctx = await buildCanonicalPlanningContext({
       state: lastSnap!.state as unknown as MobilityState, intent: newIntent, asOfDate: '2025-06-01',
     })
-    const strategy = buildStrategy(lastSnap!.state as unknown as MobilityState, newIntent, ctx.routes, ctx)
+    const strategy = await buildStrategy(lastSnap!.state as unknown as MobilityState, newIntent, ctx.routes, ctx)
     const previousActive = await db.decisionRecord.findFirst({
       where: { userId: historyUserId, planStatus: 'ACTIVE', objectiveId: 'intent-test' },
       orderBy: { createdAt: 'desc' },
@@ -547,8 +547,8 @@ describe('Strategy history (DB-backed)', () => {
     const intentRec = await createIntentRecord(person.id, baseIntent)
     const ctx = await buildCanonicalPlanningContext({ state: baseState, intent: baseIntent, asOfDate: '2025-06-01' })
 
-    const stratA = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
-    const stratB = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    const stratA = await buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    const stratB = await buildStrategy(baseState, baseIntent, ctx.routes, ctx)
 
     await adoptStrategy({
       userId: isoUserId, personId: person.id, strategy: stratA, objectiveId: 'income',
@@ -590,7 +590,7 @@ describe('Strategy history (DB-backed)', () => {
     const ctx = await buildCanonicalPlanningContext({ state: baseState, intent: baseIntent, asOfDate: '2025-06-01' })
 
     // First: adopt income strategy
-    const stratA = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    const stratA = await buildStrategy(baseState, baseIntent, ctx.routes, ctx)
     const recordA = await adoptStrategy({
       userId: objSwitchUserId, personId: person.id, strategy: stratA, objectiveId: 'income',
       stateSnapshotId: snap.id, stateVersion: snap.version,
@@ -599,7 +599,7 @@ describe('Strategy history (DB-backed)', () => {
     })
 
     // Now: adopt residence strategy (same profile, same intent — only objective changes)
-    const stratB = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    const stratB = await buildStrategy(baseState, baseIntent, ctx.routes, ctx)
     // Simulate the adopt route's cross-objective detection: the residence
     // adoption has no previous ACTIVE for 'residence', but there IS an ACTIVE
     // for 'income'. The adopt route detects this and sets OBJECTIVE_CHANGED.
@@ -638,7 +638,7 @@ describe('Strategy history (DB-backed)', () => {
   // 9c. First-strategy diff is semantically valid (no false "everything changed")
   // -------------------------------------------------------------------------
   it('first-strategy diff returns exact=true (no false mismatches)', async () => {
-    const strategy = buildStrategy(baseState, baseIntent, baseRoutes)
+    const strategy = await buildStrategy(baseState, baseIntent, baseRoutes)
     const diff = buildStrategyDiff(null, strategy)
     expect(diff.comparison.exact).toBe(true)
     expect(diff.comparison.differences).toHaveLength(0)
@@ -659,7 +659,7 @@ describe('Strategy history (DB-backed)', () => {
 
     // Build a strategy (simulating exploration) — does NOT persist
     const ctx = await buildCanonicalPlanningContext({ state: baseState, intent: baseIntent, asOfDate: '2025-06-01' })
-    const _exploredStrategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    const _exploredStrategy = await buildStrategy(baseState, baseIntent, ctx.routes, ctx)
     // Note: we do NOT call adoptStrategy here — exploration only
 
     const countAfter = await db.decisionRecord.count({ where: { userId: historyUserId } })
@@ -729,7 +729,7 @@ describe('Strategy history (DB-backed)', () => {
     const snap = await createMobilitySnapshot(ownerPerson.id, baseState)
     const intentRec = await createIntentRecord(ownerPerson.id, baseIntent)
     const ctx = await buildCanonicalPlanningContext({ state: baseState, intent: baseIntent, asOfDate: '2025-06-01' })
-    const strategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    const strategy = await buildStrategy(baseState, baseIntent, ctx.routes, ctx)
     const record = await adoptStrategy({
       userId: ownerUserId, personId: ownerPerson.id, strategy, objectiveId: 'residence',
       stateSnapshotId: snap.id, stateVersion: snap.version,

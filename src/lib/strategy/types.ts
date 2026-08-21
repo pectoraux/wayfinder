@@ -298,8 +298,10 @@ export interface Strategy {
   uncertainties: UncertaintyAssessment[]
   /** The single highest-leverage change. */
   highestLeverageChange?: ProfileAnalysis['highestLeverageChange']
-  /** Strategy explanation (deterministic). */
-  explanation: string
+  /** Strategy explanation prose (deterministic). N0.6: superseded by the
+   *  StrategyExplanation object below, but kept for backward compatibility
+   *  with stored strategy snapshots. */
+  explanation: string | import('./decision-graph').StrategyExplanation
   /** Generated at. */
   generatedAt: string
   /** The runtime policy context used to compute this strategy. */
@@ -344,4 +346,10 @@ export interface Strategy {
   desiredCapabilities?: import('./needs').DesiredCapability[]
   /** Summary of capability impact across all routes. */
   capabilityImpact?: import('./needs').CapabilityImpactSummary
+
+  // -------------------------------------------------------------------------
+  // N0.6 — Decision Graph + Explainability
+  // -------------------------------------------------------------------------
+  /** The decision graph explaining why this strategy exists. */
+  decisionGraph?: import('./decision-graph').DecisionGraph
 }

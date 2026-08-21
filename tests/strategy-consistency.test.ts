@@ -4,7 +4,7 @@
 // (runtime policy resolver + routes) as the plan API. The strategy and plan
 // must never be computed against different policy worlds.
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
 import { buildCanonicalPlanningContext, STRATEGY_ENGINE_VERSION } from '@/lib/strategy/planning-context'
 import { buildStrategy } from '@/lib/strategy'
 import { buildPlan } from '@/lib/engine/optimize'
@@ -16,7 +16,7 @@ const state = exampleState()
 const intent = parseIntentDeterministic('I want to move abroad and earn more.')
 
 describe('Strategy-policy consistency', () => {
-  it('STRATEGY_ENGINE_VERSION is defined', () => {
+  it('STRATEGY_ENGINE_VERSION is defined', async () => {
     expect(STRATEGY_ENGINE_VERSION).toBeTruthy()
     expect(typeof STRATEGY_ENGINE_VERSION).toBe('string')
   })
@@ -35,9 +35,9 @@ describe('Strategy-policy consistency', () => {
     expect(ctx.strategyEngineVersion).toBe(STRATEGY_ENGINE_VERSION)
   })
 
-  it('buildStrategy with context carries policyContext + engineVersion', () => {
+  it('buildStrategy with context carries policyContext + engineVersion', async () => {
     const routes = generateRoutes(state, intent, '2025-06-01')
-    const strategy = buildStrategy(state, intent, routes)
+    const strategy = await buildStrategy(state, intent, routes)
     // Without context, policyContext is undefined (backward compat)
     expect(strategy.strategyEngineVersion).toBe(STRATEGY_ENGINE_VERSION)
   })
@@ -52,7 +52,7 @@ describe('Strategy-policy consistency', () => {
     // Build plan using the same routes
     const plan = buildPlan(state, intent, [], '2025-06-01')
     // Build strategy using the canonical context's routes
-    const strategy = buildStrategy(state, intent, ctx.routes, ctx)
+    const strategy = await buildStrategy(state, intent, ctx.routes, ctx)
 
     // Both should have the same number of routes
     expect(strategy.bestTrajectory).toBeDefined()
@@ -66,7 +66,7 @@ describe('Strategy-policy consistency', () => {
       intent,
       asOfDate: '2025-06-01',
     })
-    const strategy = buildStrategy(state, intent, ctx.routes, ctx)
+    const strategy = await buildStrategy(state, intent, ctx.routes, ctx)
 
     expect(strategy.policyContext).toBeDefined()
     expect(strategy.policyContext!.runtimeHash).toBe(ctx.policyContext.runtimeHash)

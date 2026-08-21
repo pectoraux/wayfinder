@@ -50,7 +50,7 @@ async function cleanupTestUser(testUserId: string) {
 
 async function createDecisionRecordWithStrategy(userId: string, personId: string, objectiveId: string) {
   const routes = generateRoutes(baseState, baseIntent, '2025-06-01')
-  const strategy = buildStrategy(baseState, baseIntent, routes)
+  const strategy = await buildStrategy(baseState, baseIntent, routes)
   const record = await db.decisionRecord.create({
     data: {
       personId, userId,
@@ -89,9 +89,9 @@ async function createUserActionWithRecord(userId: string, actionId: string, deci
 // ---------------------------------------------------------------------------
 
 describe('Server-derived prediction derivation', () => {
-  it('deriveActionPrediction extracts prediction from historical strategy', () => {
+  it('deriveActionPrediction extracts prediction from historical strategy', async () => {
     const routes = generateRoutes(baseState, baseIntent, '2025-06-01')
-    const strategy = buildStrategy(baseState, baseIntent, routes)
+    const strategy = await buildStrategy(baseState, baseIntent, routes)
     const actions = strategy.actionPlan?.actions ?? []
     if (actions.length === 0) { expect(true).toBe(true); return } // skip if no actions
 
@@ -102,18 +102,18 @@ describe('Server-derived prediction derivation', () => {
     expect(prediction.decisionRecordId).toBe('test-record-id')
   })
 
-  it('deriveActionPrediction returns nulls when action not found', () => {
+  it('deriveActionPrediction returns nulls when action not found', async () => {
     const routes = generateRoutes(baseState, baseIntent, '2025-06-01')
-    const strategy = buildStrategy(baseState, baseIntent, routes)
+    const strategy = await buildStrategy(baseState, baseIntent, routes)
     const prediction = deriveActionPrediction(strategy, 'nonexistent-action', 'test-record')
 
     expect(prediction.predictedEffect).toBeNull()
     expect(prediction.predictedCostUSD).toBeNull()
   })
 
-  it('deriveStrategyPrediction extracts trajectory predictions', () => {
+  it('deriveStrategyPrediction extracts trajectory predictions', async () => {
     const routes = generateRoutes(baseState, baseIntent, '2025-06-01')
-    const strategy = buildStrategy(baseState, baseIntent, routes)
+    const strategy = await buildStrategy(baseState, baseIntent, routes)
     const prediction = deriveStrategyPrediction(strategy, 'test-record')
 
     expect(prediction.predictedTrajectoryViable).toBe(strategy.bestTrajectory.viable)
@@ -210,7 +210,7 @@ describe('Outcome provenance + persistence integrity (N0.4b)', () => {
     // Now create a NEW strategy (simulating a profile change) — the old
     // outcome's prediction must NOT change
     const newCtx = await buildCanonicalPlanningContext({ state: { ...baseState, annualIncomeUSD: { ...baseState.annualIncomeUSD, value: 999999 } }, intent: baseIntent, asOfDate: '2025-06-01' })
-    const newStrategy = buildStrategy({ ...baseState, annualIncomeUSD: { ...baseState.annualIncomeUSD, value: 999999 } }, baseIntent, newCtx.routes, newCtx)
+    const newStrategy = await buildStrategy({ ...baseState, annualIncomeUSD: { ...baseState.annualIncomeUSD, value: 999999 } }, baseIntent, newCtx.routes, newCtx)
 
     // The outcome's prediction is still the original
     const refreshed = await db.actionOutcome.findUnique({ where: { idempotencyKey: `${provenanceUserId}:${userAction.id}:event2` } })

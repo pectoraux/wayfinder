@@ -19,6 +19,7 @@ import { ProfileAnalysisSection } from '@/components/wayfinder/strategy/profile-
 import { ProfileEditor } from '@/components/wayfinder/profile-editor'
 import { IntentFrontierSection } from '@/components/wayfinder/strategy/intent-frontier-section'
 import { NeedsCapabilitySection } from '@/components/wayfinder/strategy/needs-capability-section'
+import { StrategyExplanationPanel } from '@/components/wayfinder/strategy/strategy-explanation-panel'
 import { PreferenceQuestionCard } from '@/components/wayfinder/strategy/preference-question-card'
 import { StrategyDiffBanner, type StrategyDiff } from '@/components/wayfinder/strategy/strategy-diff-banner'
 import { StrategyStalenessBanner } from '@/components/wayfinder/strategy/strategy-staleness-banner'
@@ -234,6 +235,13 @@ export function ResultsDashboard() {
                 desiredCapabilities={strategy.desiredCapabilities ?? []}
                 capabilityImpact={strategy.capabilityImpact ?? null}
               />
+            </section>
+          )}
+
+          {/* N0.6 — Strategy Explanation Panel */}
+          {strategy.explanation && typeof strategy.explanation !== 'string' && (
+            <section className="mb-6">
+              <StrategyExplanationPanel explanation={strategy.explanation as any} />
             </section>
           )}
 

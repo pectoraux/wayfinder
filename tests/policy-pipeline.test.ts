@@ -67,7 +67,7 @@ describe('Source fetching', () => {
     }
   }, 20000)
 
-  it('the source registry has active sources with monitoring frequency', () => {
+  it('the source registry has active sources with monitoring frequency', async () => {
     expect(SOURCES.length).toBeGreaterThan(0)
     for (const s of SOURCES) {
       expect(s.active).toBe(true)
@@ -83,12 +83,12 @@ describe('Source fetching', () => {
 // ===========================================================================
 
 describe('Change classification', () => {
-  it('returns UNCHANGED for identical content', () => {
+  it('returns UNCHANGED for identical content', async () => {
     const text = 'The minimum salary is EUR 45,300.'
     expect(classifyChangeExpanded(text, text)).toBe('UNCHANGED')
   })
 
-  it('returns FETCH_ERROR when retrieval failed', () => {
+  it('returns FETCH_ERROR when retrieval failed', async () => {
     expect(classifyChangeExpanded('old', 'new', 'HTTP_ERROR')).toBe('FETCH_ERROR')
     expect(classifyChangeExpanded('old', 'new', 'TIMEOUT')).toBe('FETCH_ERROR')
   })
@@ -102,21 +102,21 @@ describe('Change classification', () => {
     expect(result).not.toBe('VERIFIED_POLICY_CHANGE')
   })
 
-  it('classifies a salary threshold change as LIKELY_POLICY_CHANGE', () => {
+  it('classifies a salary threshold change as LIKELY_POLICY_CHANGE', async () => {
     const before = 'The minimum salary threshold is EUR 45,300 for shortage occupations.'
     const after = 'The minimum salary threshold is EUR 52,000 for shortage occupations.'
     const result = classifyChangeExpanded(before, after)
     expect(result).toBe('LIKELY_POLICY_CHANGE')
   })
 
-  it('classifies a policy keyword addition as POSSIBLE_POLICY_CHANGE', () => {
+  it('classifies a policy keyword addition as POSSIBLE_POLICY_CHANGE', async () => {
     const before = 'Welcome to our website.'
     const after = 'Welcome to our website. New visa requirement: language test.'
     const result = classifyChangeExpanded(before, after)
     expect(result).toBe('POSSIBLE_POLICY_CHANGE')
   })
 
-  it('does not flag a cookie banner change as a policy change', () => {
+  it('does not flag a cookie banner change as a policy change', async () => {
     const before = 'We use cookies. Accept all cookies.'
     const after = 'We use cookies. Accept all cookies. Updated privacy policy.'
     const result = classifyChangeExpanded(before, after)
@@ -132,7 +132,7 @@ describe('Change classification', () => {
 // ===========================================================================
 
 describe('Document diffing', () => {
-  it('produces a diff with sections for changed content', () => {
+  it('produces a diff with sections for changed content', async () => {
     const before = 'Section 1\nMinimum income: EUR 820\nSection 2\nProcessing time: 3 months'
     const after = 'Section 1\nMinimum income: EUR 970\nSection 2\nProcessing time: 3 months'
     const diff = diffDocuments(before, after)
@@ -140,7 +140,7 @@ describe('Document diffing', () => {
     expect(summarizeDiff(diff)).toContain('line')
   })
 
-  it('returns no sections for identical content', () => {
+  it('returns no sections for identical content', async () => {
     const text = 'No changes here.'
     const diff = diffDocuments(text, text)
     expect(diff.sections.length).toBe(0)
@@ -152,7 +152,7 @@ describe('Document diffing', () => {
 // ===========================================================================
 
 describe('AI extraction boundaries', () => {
-  it('candidate facts enter as AI_EXTRACTED, never authoritative', () => {
+  it('candidate facts enter as AI_EXTRACTED, never authoritative', async () => {
     const candidate: CandidateFact = {
       id: 'cand-test',
       sourceSnapshotId: 'snap-test',
@@ -184,11 +184,11 @@ describe('AI extraction boundaries', () => {
 // ===========================================================================
 
 describe('Verification state machine', () => {
-  it('AI_EXTRACTED can transition to PENDING_REVIEW', () => {
+  it('AI_EXTRACTED can transition to PENDING_REVIEW', async () => {
     expect(canTransitionExtraction('AI_EXTRACTED', 'PENDING_REVIEW')).toBe(true)
   })
 
-  it('AI_EXTRACTED can transition directly to REJECTED', () => {
+  it('AI_EXTRACTED can transition directly to REJECTED', async () => {
     expect(canTransitionExtraction('AI_EXTRACTED', 'REJECTED')).toBe(true)
   })
 
@@ -196,16 +196,16 @@ describe('Verification state machine', () => {
     expect(canTransitionExtraction('AI_EXTRACTED', 'APPROVED')).toBe(false)
   })
 
-  it('PENDING_REVIEW can transition to APPROVED', () => {
+  it('PENDING_REVIEW can transition to APPROVED', async () => {
     expect(canTransitionExtraction('PENDING_REVIEW', 'APPROVED')).toBe(true)
   })
 
-  it('PENDING_REVIEW can transition to REJECTED or NEEDS_MORE_EVIDENCE', () => {
+  it('PENDING_REVIEW can transition to REJECTED or NEEDS_MORE_EVIDENCE', async () => {
     expect(canTransitionExtraction('PENDING_REVIEW', 'REJECTED')).toBe(true)
     expect(canTransitionExtraction('PENDING_REVIEW', 'NEEDS_MORE_EVIDENCE')).toBe(true)
   })
 
-  it('APPROVED can only transition to SUPERSEDED', () => {
+  it('APPROVED can only transition to SUPERSEDED', async () => {
     expect(canTransitionExtraction('APPROVED', 'SUPERSEDED')).toBe(true)
     expect(canTransitionExtraction('APPROVED', 'REJECTED')).toBe(false)
   })
@@ -215,12 +215,12 @@ describe('Verification state machine', () => {
     expect(canTransitionExtraction('REJECTED', 'PENDING_REVIEW')).toBe(false)
   })
 
-  it('transitionCandidate returns ok=true for legal transitions', () => {
+  it('transitionCandidate returns ok=true for legal transitions', async () => {
     const result = transitionCandidate({ extractionStatus: 'AI_EXTRACTED' }, 'PENDING_REVIEW')
     expect(result.ok).toBe(true)
   })
 
-  it('transitionCandidate returns ok=false for illegal transitions', () => {
+  it('transitionCandidate returns ok=false for illegal transitions', async () => {
     const result = transitionCandidate({ extractionStatus: 'AI_EXTRACTED' }, 'APPROVED')
     expect(result.ok).toBe(false)
     expect(result.reason).toContain('Illegal transition')
@@ -252,12 +252,12 @@ describe('Policy publication', () => {
     createdAt: new Date().toISOString(),
   }
 
-  it('publishPolicyVersion throws if the candidate is not APPROVED', () => {
+  it('publishPolicyVersion throws if the candidate is not APPROVED', async () => {
     const unapproved: CandidateFact = { ...approvedCandidate, extractionStatus: 'AI_EXTRACTED' }
     expect(() => publishPolicyVersion(unapproved, 'admin@test', 'snap-2024-11')).toThrow(/not APPROVED/)
   })
 
-  it('publishPolicyVersion creates a new version with a hash and parent pointer', () => {
+  it('publishPolicyVersion creates a new version with a hash and parent pointer', async () => {
     const pub = publishPolicyVersion(approvedCandidate, 'admin@test', 'snap-2024-11')
     expect(pub.policyVersionId).toMatch(/^snap-/)
     expect(pub.parentVersionId).toBe('snap-2024-11')
@@ -266,7 +266,7 @@ describe('Policy publication', () => {
     expect(pub.candidateFactIds).toContain('cand-approved')
   })
 
-  it('publishPolicyVersion runs consistency checks and they pass for valid data', () => {
+  it('publishPolicyVersion runs consistency checks and they pass for valid data', async () => {
     const pub = publishPolicyVersion(approvedCandidate, 'admin@test', 'snap-2024-11')
     expect(pub.consistencyChecks.length).toBeGreaterThan(0)
     for (const check of pub.consistencyChecks) {
@@ -274,12 +274,12 @@ describe('Policy publication', () => {
     }
   })
 
-  it('the new version has provenance AUTHORITATIVE by default', () => {
+  it('the new version has provenance AUTHORITATIVE by default', async () => {
     const pub = publishPolicyVersion(approvedCandidate, 'admin@test', 'snap-2024-11')
     expect(pub.provenance).toBe('AUTHORITATIVE')
   })
 
-  it('the publication is immutable — it records the approvedAt timestamp', () => {
+  it('the publication is immutable — it records the approvedAt timestamp', async () => {
     const pub = publishPolicyVersion(approvedCandidate, 'admin@test', 'snap-2024-11')
     expect(pub.approvedAt).toBeTruthy()
     expect(new Date(pub.approvedAt).getTime()).toBeLessThanOrEqual(Date.now())
@@ -291,7 +291,7 @@ describe('Policy publication', () => {
 // ===========================================================================
 
 describe('Policy consistency checks', () => {
-  it('all 8 checks run and pass for the current knowledge base', () => {
+  it('all 8 checks run and pass for the current knowledge base', async () => {
     const checks = runConsistencyChecks(REQUIREMENTS, TRANSITIONS, PROGRAMS, {
       id: 'snap-test',
       provenance: 'AUTHORITATIVE',
@@ -312,7 +312,7 @@ describe('Policy consistency checks', () => {
     }
   })
 
-  it('provenance check fails for SIMULATED snapshots', () => {
+  it('provenance check fails for SIMULATED snapshots', async () => {
     const checks = runConsistencyChecks(REQUIREMENTS, TRANSITIONS, PROGRAMS, {
       id: 'snap-sim',
       provenance: 'SIMULATED',
@@ -328,57 +328,57 @@ describe('Policy consistency checks', () => {
 // ===========================================================================
 
 describe('Provenance safety', () => {
-  it('the SIMULATED snapshot is marked with provenance SIMULATED', () => {
+  it('the SIMULATED snapshot is marked with provenance SIMULATED', async () => {
     const sim = listSnapshots().find((s) => s.id === 'snap-2026-01')
     expect(sim).toBeDefined()
     expect(sim!.provenance).toBe('SIMULATED')
   })
 
-  it('the AUTHORITATIVE snapshot is marked with provenance AUTHORITATIVE', () => {
+  it('the AUTHORITATIVE snapshot is marked with provenance AUTHORITATIVE', async () => {
     const auth = listSnapshots().find((s) => s.id === 'snap-2024-11')
     expect(auth).toBeDefined()
     expect(auth!.provenance).toBe('AUTHORITATIVE')
   })
 
-  it('getCurrentPolicySnapshot NEVER returns a SIMULATED snapshot', () => {
+  it('getCurrentPolicySnapshot NEVER returns a SIMULATED snapshot', async () => {
     const current = getCurrentPolicySnapshot()
     expect(current.provenance).toBe('AUTHORITATIVE')
     expect(current.provenance).not.toBe('SIMULATED')
   })
 
-  it('getPolicySnapshot excludes SIMULATED by default', () => {
+  it('getPolicySnapshot excludes SIMULATED by default', async () => {
     // For a date in 2026, the default (non-simulated) result should be the authoritative 2024 snapshot
     const snap = getPolicySnapshot('global', '2026-06-01')
     expect(snap.provenance).toBe('AUTHORITATIVE')
     expect(snap.id).toBe('snap-2024-11')
   })
 
-  it('getPolicySnapshot includes SIMULATED only when allowSimulated=true', () => {
+  it('getPolicySnapshot includes SIMULATED only when allowSimulated=true', async () => {
     const snap = getPolicySnapshot('global', '2026-06-01', true)
     expect(snap.provenance).toBe('SIMULATED')
     expect(snap.id).toBe('snap-2026-01')
   })
 
-  it('listAuthoritativeSnapshots excludes SIMULATED', () => {
+  it('listAuthoritativeSnapshots excludes SIMULATED', async () => {
     const auth = listAuthoritativeSnapshots()
     expect(auth.every((s) => s.provenance === 'AUTHORITATIVE' || s.provenance === 'DERIVED')).toBe(true)
     expect(auth.find((s) => s.id === 'snap-2026-01')).toBeUndefined()
   })
 
-  it('listSimulatedSnapshots returns only SIMULATED/TEST_FIXTURE', () => {
+  it('listSimulatedSnapshots returns only SIMULATED/TEST_FIXTURE', async () => {
     const sim = listSimulatedSnapshots()
     expect(sim.every((s) => s.provenance === 'SIMULATED' || s.provenance === 'TEST_FIXTURE')).toBe(true)
     expect(sim.find((s) => s.id === 'snap-2024-11')).toBeUndefined()
   })
 
-  it('buildPlan without simulationMode never uses a SIMULATED snapshot', () => {
+  it('buildPlan without simulationMode never uses a SIMULATED snapshot', async () => {
     const state = exampleState()
     const intent = parseIntentDeterministic('I want to move abroad.')
     const plan = buildPlan(state, intent, [], '2026-06-01') // no simulationMode
     expect(plan.policySnapshotId).toBe('snap-2024-11') // falls back to authoritative
   })
 
-  it('buildPlan with simulationMode=true can access the SIMULATED snapshot', () => {
+  it('buildPlan with simulationMode=true can access the SIMULATED snapshot', async () => {
     const state = exampleState()
     const intent = parseIntentDeterministic('I want to move abroad.')
     const plan = buildPlan(state, intent, [], '2026-06-01', true)
@@ -391,7 +391,7 @@ describe('Provenance safety', () => {
 // ===========================================================================
 
 describe('Plan impact analysis', () => {
-  it('isMaterialImpact returns true only for ROUTE_DEGRADED, ROUTE_INVALIDATED, NEW_BETTER_ROUTE', () => {
+  it('isMaterialImpact returns true only for ROUTE_DEGRADED, ROUTE_INVALIDATED, NEW_BETTER_ROUTE', async () => {
     expect(isMaterialImpact('NO_MATERIAL_CHANGE')).toBe(false)
     expect(isMaterialImpact('MINOR_CHANGE')).toBe(false)
     expect(isMaterialImpact('ROUTE_DEGRADED')).toBe(true)
@@ -411,7 +411,7 @@ describe('Plan impact analysis', () => {
     expect(newPlan).toBeDefined()
   })
 
-  it('getAffectedDecisionRecordIds returns records computed before the change effective date', () => {
+  it('getAffectedDecisionRecordIds returns records computed before the change effective date', async () => {
     const candidate: CandidateFact = {
       id: 'cand-test',
       sourceSnapshotId: 'snap-test',
@@ -443,16 +443,16 @@ describe('Plan impact analysis', () => {
 // ===========================================================================
 
 describe('Content hashing', () => {
-  it('contentHash is deterministic and stable under whitespace normalization', () => {
+  it('contentHash is deterministic and stable under whitespace normalization', async () => {
     expect(contentHash('Hello World')).toBe(contentHash('  hello   world  '))
     expect(contentHash('Hello World')).toBe(contentHash('HELLO WORLD'))
   })
 
-  it('contentHash differs for different content', () => {
+  it('contentHash differs for different content', async () => {
     expect(contentHash('salary: 45000')).not.toBe(contentHash('salary: 52000'))
   })
 
-  it('normalizeContent trims, collapses whitespace, lowercases', () => {
+  it('normalizeContent trims, collapses whitespace, lowercases', async () => {
     expect(normalizeContent('  Hello\n  World  ')).toBe('hello world')
   })
 })
@@ -462,11 +462,11 @@ describe('Content hashing', () => {
 // ===========================================================================
 
 describe('Notification safety', () => {
-  it('a NO_MATERIAL_CHANGE impact does not produce an alert', () => {
+  it('a NO_MATERIAL_CHANGE impact does not produce an alert', async () => {
     expect(isMaterialImpact('NO_MATERIAL_CHANGE')).toBe(false)
   })
 
-  it('a MINOR_CHANGE impact does not produce an alert', () => {
+  it('a MINOR_CHANGE impact does not produce an alert', async () => {
     expect(isMaterialImpact('MINOR_CHANGE')).toBe(false)
   })
 

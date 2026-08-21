@@ -102,7 +102,7 @@ export async function POST(req: Request) {
       intent: updatedIntent,
       asOfDate: body.asOfDate,
     })
-    const newStrategy = buildStrategy(body.state, updatedIntent, ctx.routes, ctx)
+    const newStrategy = await buildStrategy(body.state, updatedIntent, ctx.routes, ctx)
 
     // 4. Compute a diff summary (what changed)
     const oldBestTrajectory = body.currentIntent // placeholder — the real diff compares old vs new strategy

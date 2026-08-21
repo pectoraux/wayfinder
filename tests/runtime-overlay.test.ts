@@ -141,13 +141,13 @@ describe('Runtime overlay resolution', () => {
 // ===========================================================================
 
 describe('Runtime policy hashing', () => {
-  it('same inputs produce the same hash', () => {
+  it('same inputs produce the same hash', async () => {
     const h1 = runtimePolicyHash('snap-2024-11', ['pub-1', 'pub-2'], '2025-06-01')
     const h2 = runtimePolicyHash('snap-2024-11', ['pub-1', 'pub-2'], '2025-06-01')
     expect(h1).toBe(h2)
   })
 
-  it('different overlays produce a different hash', () => {
+  it('different overlays produce a different hash', async () => {
     const h1 = runtimePolicyHash('snap-2024-11', ['pub-1'], '2025-06-01')
     const h2 = runtimePolicyHash('snap-2024-11', ['pub-2'], '2025-06-01')
     expect(h1).not.toBe(h2)
@@ -159,7 +159,7 @@ describe('Runtime policy hashing', () => {
     expect(h1).toBe(h2)
   })
 
-  it('different asOf dates produce different hashes', () => {
+  it('different asOf dates produce different hashes', async () => {
     const h1 = runtimePolicyHash('snap-2024-11', [], '2025-06-01')
     const h2 = runtimePolicyHash('snap-2024-11', [], '2026-06-01')
     expect(h1).not.toBe(h2)
@@ -205,7 +205,7 @@ describe('Policy publication → runtime', () => {
     expect(salaryReq!.params.amount).toBe(70000)
   })
 
-  it('an unapproved candidate cannot be published', () => {
+  it('an unapproved candidate cannot be published', async () => {
     const unapproved: CandidateFact = { ...approvedCandidate, extractionStatus: 'PENDING_REVIEW' }
     expect(() => publishPolicyVersion(unapproved, 'admin', 'snap-2024-11')).toThrow(/not APPROVED/)
   })
@@ -223,7 +223,7 @@ describe('Policy publication → runtime', () => {
 // ===========================================================================
 
 describe('Alert generation', () => {
-  it('severityForImpact maps levels correctly', () => {
+  it('severityForImpact maps levels correctly', async () => {
     expect(severityForImpact('ROUTE_INVALIDATED')).toBe('CRITICAL')
     expect(severityForImpact('ROUTE_DEGRADED')).toBe('IMPORTANT')
     expect(severityForImpact('NEW_BETTER_ROUTE')).toBe('NOTICE')
@@ -231,7 +231,7 @@ describe('Alert generation', () => {
     expect(severityForImpact('NO_MATERIAL_CHANGE')).toBe('INFO')
   })
 
-  it('isMaterialImpact returns true only for material levels', () => {
+  it('isMaterialImpact returns true only for material levels', async () => {
     expect(isMaterialImpact('ROUTE_INVALIDATED')).toBe(true)
     expect(isMaterialImpact('ROUTE_DEGRADED')).toBe(true)
     expect(isMaterialImpact('NEW_BETTER_ROUTE')).toBe(true)
@@ -306,7 +306,7 @@ describe('Alert generation', () => {
 // ===========================================================================
 
 describe('Overlay application', () => {
-  it('applies a requirement threshold change', () => {
+  it('applies a requirement threshold change', async () => {
     const overlay: PolicyOverlay = {
       id: 'o', publicationId: 'p', parentPolicyVersion: 'snap-2024-11',
       jurisdictionId: 'global', effectiveFrom: '2024-01-01', provenance: 'AUTHORITATIVE',
@@ -372,7 +372,7 @@ describe('Fail-safe behavior', () => {
     expect(snap.requirements.length).toBe(baseReqs.length)
   })
 
-  it('resolveRuntimePolicySync returns base knowledge synchronously', () => {
+  it('resolveRuntimePolicySync returns base knowledge synchronously', async () => {
     const snap = resolveRuntimePolicySync({ asOf: '2025-06-01' })
     expect(snap.activeOverlayIds).toHaveLength(0)
     // Sync variant uses global arrays (no snapshot-specific loading)
@@ -402,7 +402,7 @@ describe('Plan versioning', () => {
     expect(plan.activeOverlayIds).toEqual([])
   })
 
-  it('old plans remain immutable — recomputation produces a new plan object', () => {
+  it('old plans remain immutable — recomputation produces a new plan object', async () => {
     const state = exampleState()
     const intent = parseIntentDeterministic('I want to move abroad.')
     const plan1 = buildPlan(state, intent, [], '2025-06-01')

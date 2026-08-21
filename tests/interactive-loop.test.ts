@@ -61,7 +61,7 @@ const intent = parseIntentDeterministic('I want to move abroad and earn more.')
 // ===========================================================================
 
 describe('Preference application', () => {
-  it('answering "residence" boosts safety_priority and reduces income_priority', () => {
+  it('answering "residence" boosts safety_priority and reduces income_priority', async () => {
     const updated = applyPreferenceAnswer(intent, 'pq-income-vs-residence', 'residence')
     const safety = updated.priorities.find((p) => p.kind === 'safety_priority')
     const income = updated.priorities.find((p) => p.kind === 'income_priority')
@@ -69,24 +69,24 @@ describe('Preference application', () => {
     expect(income?.weight).toBe(0.1)
   })
 
-  it('answering "income" boosts income_priority', () => {
+  it('answering "income" boosts income_priority', async () => {
     const updated = applyPreferenceAnswer(intent, 'pq-income-vs-residence', 'income')
     const income = updated.priorities.find((p) => p.kind === 'income_priority')
     expect(income?.weight).toBe(0.45)
   })
 
-  it('answering "balanced" leaves priorities unchanged', () => {
+  it('answering "balanced" leaves priorities unchanged', async () => {
     const updated = applyPreferenceAnswer(intent, 'pq-income-vs-residence', 'balanced')
     expect(updated.priorities).toEqual(intent.priorities)
   })
 
-  it('the original intent is not mutated', () => {
+  it('the original intent is not mutated', async () => {
     const original = JSON.parse(JSON.stringify(intent))
     applyPreferenceAnswer(intent, 'pq-income-vs-residence', 'residence')
     expect(intent.priorities).toEqual(original.priorities)
   })
 
-  it('answering "optionality" boosts mobility_priority', () => {
+  it('answering "optionality" boosts mobility_priority', async () => {
     const updated = applyPreferenceAnswer(intent, 'pq-speed-vs-optionality', 'optionality')
     const mobility = updated.priorities.find((p) => p.kind === 'mobility_priority')
     expect(mobility?.weight).toBe(0.35)
@@ -98,20 +98,20 @@ describe('Preference application', () => {
 // ===========================================================================
 
 describe('Strategy recomputation after preference change', () => {
-  it('recomputing strategy with updated priorities produces a valid strategy', () => {
+  it('recomputing strategy with updated priorities produces a valid strategy', async () => {
     const updatedIntent = applyPreferenceAnswer(intent, 'pq-income-vs-residence', 'residence')
     const routes = generateRoutes(state, updatedIntent, '2025-06-01')
-    const strategy = buildStrategy(state, updatedIntent, routes)
+    const strategy = await buildStrategy(state, updatedIntent, routes)
 
     expect(strategy).toBeDefined()
     expect(strategy.bestTrajectory).toBeDefined()
     expect(strategy.intent.priorities).not.toEqual(intent.priorities)
   })
 
-  it('the recomputed strategy carries the same engine version', () => {
+  it('the recomputed strategy carries the same engine version', async () => {
     const updatedIntent = applyPreferenceAnswer(intent, 'pq-income-vs-residence', 'residence')
     const routes = generateRoutes(state, updatedIntent, '2025-06-01')
-    const strategy = buildStrategy(state, updatedIntent, routes)
+    const strategy = await buildStrategy(state, updatedIntent, routes)
 
     expect(strategy.strategyEngineVersion).toBe(STRATEGY_ENGINE_VERSION)
   })
@@ -122,16 +122,16 @@ describe('Strategy recomputation after preference change', () => {
 // ===========================================================================
 
 describe('Action lifecycle', () => {
-  it('ActionStatus has the expected states', () => {
+  it('ActionStatus has the expected states', async () => {
     const statuses: ActionStatus[] = ['NOT_STARTED', 'IN_PROGRESS', 'COMPLETE', 'BLOCKED', 'CANCELLED']
     expect(statuses).toHaveLength(5)
     expect(statuses).toContain('NOT_STARTED')
     expect(statuses).toContain('COMPLETE')
   })
 
-  it('the strategy produces actions with deterministic IDs', () => {
+  it('the strategy produces actions with deterministic IDs', async () => {
     const routes = generateRoutes(state, intent, '2025-06-01')
-    const strategy = buildStrategy(state, intent, routes)
+    const strategy = await buildStrategy(state, intent, routes)
 
     if (strategy.actionPlan.actions.length > 0) {
       for (const action of strategy.actionPlan.actions) {
@@ -140,9 +140,9 @@ describe('Action lifecycle', () => {
     }
   })
 
-  it('the action plan has a highest-leverage action when actions exist', () => {
+  it('the action plan has a highest-leverage action when actions exist', async () => {
     const routes = generateRoutes(state, intent, '2025-06-01')
-    const strategy = buildStrategy(state, intent, routes)
+    const strategy = await buildStrategy(state, intent, routes)
 
     if (strategy.actionPlan.actions.length > 0) {
       expect(strategy.actionPlan.highestLeverageAction).toBeDefined()
@@ -155,10 +155,10 @@ describe('Action lifecycle', () => {
 // ===========================================================================
 
 describe('State change → strategy recomputation', () => {
-  it('adding degree recognition changes the strategy output', () => {
+  it('adding degree recognition changes the strategy output', async () => {
     // Baseline strategy
     const routes1 = generateRoutes(state, intent, '2025-06-01')
-    const strategy1 = buildStrategy(state, intent, routes1)
+    const strategy1 = await buildStrategy(state, intent, routes1)
 
     // Modified state: degree recognized in Germany
     const modifiedState: MobilityState = JSON.parse(JSON.stringify(state))
@@ -168,7 +168,7 @@ describe('State change → strategy recomputation', () => {
     }
 
     const routes2 = generateRoutes(modifiedState, intent, '2025-06-01')
-    const strategy2 = buildStrategy(modifiedState, intent, routes2)
+    const strategy2 = await buildStrategy(modifiedState, intent, routes2)
 
     // The strategies should differ (different state → potentially different routes/blockers)
     expect(strategy2).toBeDefined()
@@ -194,11 +194,11 @@ describe('Policy consistency across recomputation', () => {
 
   it('strategy after preference change uses the same policy context', async () => {
     const ctx1 = await buildCanonicalPlanningContext({ state, intent, asOfDate: '2025-06-01' })
-    const strategy1 = buildStrategy(state, intent, ctx1.routes, ctx1)
+    const strategy1 = await buildStrategy(state, intent, ctx1.routes, ctx1)
 
     const updatedIntent = applyPreferenceAnswer(intent, 'pq-income-vs-residence', 'residence')
     const ctx2 = await buildCanonicalPlanningContext({ state, intent: updatedIntent, asOfDate: '2025-06-01' })
-    const strategy2 = buildStrategy(state, updatedIntent, ctx2.routes, ctx2)
+    const strategy2 = await buildStrategy(state, updatedIntent, ctx2.routes, ctx2)
 
     // Same policy hash (only the intent changed, not the policy)
     expect(strategy1.policyContext?.runtimeHash).toBe(strategy2.policyContext?.runtimeHash)
@@ -216,7 +216,7 @@ describe('Preference → intent version', () => {
     expect(updated.priorities).not.toBe(intent.priorities)
   })
 
-  it('different answers produce different priority vectors', () => {
+  it('different answers produce different priority vectors', async () => {
     const residenceIntent = applyPreferenceAnswer(intent, 'pq-income-vs-residence', 'residence')
     const incomeIntent = applyPreferenceAnswer(intent, 'pq-income-vs-residence', 'income')
 

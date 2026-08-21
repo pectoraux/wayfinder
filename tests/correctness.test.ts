@@ -48,7 +48,7 @@ describe('No hardcoded snapshots in production paths', () => {
 // ===========================================================================
 
 describe('Base-aware overlay validation', () => {
-  it('accepts an overlay with correct oldValue', () => {
+  it('accepts an overlay with correct oldValue', async () => {
     const overlay: PolicyOverlay = {
       id: 'o', publicationId: 'p', parentPolicyVersion: 'snap-2024-11',
       jurisdictionId: 'global', effectiveFrom: '2024-01-01', provenance: 'AUTHORITATIVE',
@@ -63,7 +63,7 @@ describe('Base-aware overlay validation', () => {
     expect(result.errors).toHaveLength(0)
   })
 
-  it('rejects an overlay with incorrect oldValue', () => {
+  it('rejects an overlay with incorrect oldValue', async () => {
     const overlay: PolicyOverlay = {
       id: 'o', publicationId: 'p', parentPolicyVersion: 'snap-2024-11',
       jurisdictionId: 'global', effectiveFrom: '2024-01-01', provenance: 'AUTHORITATIVE',
@@ -79,7 +79,7 @@ describe('Base-aware overlay validation', () => {
     expect(result.errors[0]).toContain('oldValue')
   })
 
-  it('rejects an overlay referencing a non-existent entity', () => {
+  it('rejects an overlay referencing a non-existent entity', async () => {
     const overlay: PolicyOverlay = {
       id: 'o', publicationId: 'p', parentPolicyVersion: 'snap-2024-11',
       jurisdictionId: 'global', effectiveFrom: '2024-01-01', provenance: 'AUTHORITATIVE',
@@ -114,14 +114,14 @@ describe('Base-aware overlay validation', () => {
 // ===========================================================================
 
 describe('Hash correctness', () => {
-  it('same resolved state → same hash', () => {
+  it('same resolved state → same hash', async () => {
     const reqs = getRequirementsInSnapshot('snap-2024-11')
     const h1 = runtimePolicyHash('snap-2024-11', [], '2025-06-01', reqs, PROGRAMS, TRANSITIONS)
     const h2 = runtimePolicyHash('snap-2024-11', [], '2025-06-01', reqs, PROGRAMS, TRANSITIONS)
     expect(h1).toBe(h2)
   })
 
-  it('different resolved requirements → different hash', () => {
+  it('different resolved requirements → different hash', async () => {
     const reqs1 = getRequirementsInSnapshot('snap-2024-11')
     const reqs2 = reqs1.map((r) =>
       r.id === 'req-de-bc-salary-v1' ? { ...r, params: { ...r.params, amount: 99999 } } : r,
@@ -144,7 +144,7 @@ describe('Hash correctness', () => {
 // ===========================================================================
 
 describe('Plan diff', () => {
-  it('produces no changes for identical plans', () => {
+  it('produces no changes for identical plans', async () => {
     const state = exampleState()
     const intent = parseIntentDeterministic('I want to move abroad.')
     const plan = buildPlan(state, intent, [], '2025-06-01')
@@ -155,7 +155,7 @@ describe('Plan diff', () => {
     expect(diff.newBlockers).toHaveLength(0)
   })
 
-  it('detects a best-route change', () => {
+  it('detects a best-route change', async () => {
     const state = exampleState()
     const intent = parseIntentDeterministic('I want to move abroad.')
     const plan1 = buildPlan(state, intent, [], '2025-06-01')
@@ -168,7 +168,7 @@ describe('Plan diff', () => {
     expect(diff.bestRouteChanged).toBe(true)
   })
 
-  it('summarizes the diff', () => {
+  it('summarizes the diff', async () => {
     const state = exampleState()
     const intent = parseIntentDeterministic('I want to move abroad.')
     const plan = buildPlan(state, intent, [], '2025-06-01')
@@ -213,7 +213,7 @@ describe('Decision replay', () => {
 // ===========================================================================
 
 describe('Overlay application immutability', () => {
-  it('applyOverlays does not mutate the base arrays', () => {
+  it('applyOverlays does not mutate the base arrays', async () => {
     const originalReq = REQUIREMENTS.find((r) => r.id === 'req-de-bc-salary-v1')!
     const originalAmount = originalReq.params.amount
 

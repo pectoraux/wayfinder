@@ -47,7 +47,7 @@ async function cleanupTestUser(testUserId: string) {
 
 async function createDecisionRecord(userId: string, personId: string, objectiveId: string) {
   const ctx = await buildCanonicalPlanningContext({ state: baseState, intent: baseIntent, asOfDate: '2025-06-01' })
-  const strategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+  const strategy = await buildStrategy(baseState, baseIntent, ctx.routes, ctx)
   return db.decisionRecord.create({
     data: {
       personId, userId,
@@ -78,29 +78,29 @@ async function createUserAction(userId: string, actionId: string) {
 
 describe('Prediction-vs-actual evaluation', () => {
   describe('evaluateNumeric', () => {
-    it('returns MATCHED when within 15% threshold', () => {
+    it('returns MATCHED when within 15% threshold', async () => {
       const { status, variance } = evaluateNumeric(100, 105, 'cost')
       expect(status).toBe('MATCHED')
       expect(variance?.delta).toBe(5)
       expect(variance?.relativeDelta).toBe(0.05)
     })
 
-    it('returns PARTIALLY_MATCHED when within 40% threshold', () => {
+    it('returns PARTIALLY_MATCHED when within 40% threshold', async () => {
       const { status } = evaluateNumeric(100, 130, 'timeline')
       expect(status).toBe('PARTIALLY_MATCHED')
     })
 
-    it('returns MISSED when beyond threshold', () => {
+    it('returns MISSED when beyond threshold', async () => {
       const { status } = evaluateNumeric(100, 200, 'cost')
       expect(status).toBe('MISSED')
     })
 
-    it('returns UNKNOWN when either value is null', () => {
+    it('returns UNKNOWN when either value is null', async () => {
       expect(evaluateNumeric(null, 100, 'cost').status).toBe('UNKNOWN')
       expect(evaluateNumeric(100, null, 'cost').status).toBe('UNKNOWN')
     })
 
-    it('calculates variance correctly for negative delta', () => {
+    it('calculates variance correctly for negative delta', async () => {
       const { variance } = evaluateNumeric(100, 80, 'timeline')
       expect(variance?.delta).toBe(-20)
       expect(variance?.relativeDelta).toBe(0.2)
@@ -108,16 +108,16 @@ describe('Prediction-vs-actual evaluation', () => {
   })
 
   describe('evaluateBoolean', () => {
-    it('returns MATCHED when both agree', () => {
+    it('returns MATCHED when both agree', async () => {
       expect(evaluateBoolean(true, true)).toBe('MATCHED')
       expect(evaluateBoolean(false, false)).toBe('MATCHED')
     })
 
-    it('returns MISSED when they disagree', () => {
+    it('returns MISSED when they disagree', async () => {
       expect(evaluateBoolean(true, false)).toBe('MISSED')
     })
 
-    it('returns UNKNOWN when either is null', () => {
+    it('returns UNKNOWN when either is null', async () => {
       expect(evaluateBoolean(null, true)).toBe('UNKNOWN')
       expect(evaluateBoolean(true, null)).toBe('UNKNOWN')
     })
@@ -128,21 +128,21 @@ describe('Prediction-vs-actual evaluation', () => {
       expect(evaluateCategorical('Succeeded', 'succeeded')).toBe('MATCHED')
     })
 
-    it('returns PARTIALLY_MATCHED for substring', () => {
+    it('returns PARTIALLY_MATCHED for substring', async () => {
       expect(evaluateCategorical('credential recognition completed', 'completed')).toBe('PARTIALLY_MATCHED')
     })
 
-    it('returns MISSED for different strings', () => {
+    it('returns MISSED for different strings', async () => {
       expect(evaluateCategorical('succeeded', 'failed')).toBe('MISSED')
     })
 
-    it('returns UNKNOWN when either is null', () => {
+    it('returns UNKNOWN when either is null', async () => {
       expect(evaluateCategorical(null, 'test')).toBe('UNKNOWN')
     })
   })
 
   describe('evaluateActionOutcome (composite)', () => {
-    it('returns MATCHED when all dimensions match', () => {
+    it('returns MATCHED when all dimensions match', async () => {
       const result = evaluateActionOutcome({
         predictedEffect: 'succeeded', actualEffect: 'succeeded',
         predictedDurationMonths: 6, actualDurationMonths: 6.5,
@@ -153,7 +153,7 @@ describe('Prediction-vs-actual evaluation', () => {
       expect(result.dimensions.length).toBe(4)
     })
 
-    it('returns MISSED when any dimension misses', () => {
+    it('returns MISSED when any dimension misses', async () => {
       const result = evaluateActionOutcome({
         predictedEffect: 'succeeded', actualEffect: 'failed',
         predictedDurationMonths: 6, actualDurationMonths: 6.5,
@@ -161,7 +161,7 @@ describe('Prediction-vs-actual evaluation', () => {
       expect(result.overallStatus).toBe('MISSED')
     })
 
-    it('returns UNKNOWN when no actuals provided', () => {
+    it('returns UNKNOWN when no actuals provided', async () => {
       const result = evaluateActionOutcome({
         predictedEffect: 'succeeded',
         predictedDurationMonths: 6,
@@ -169,7 +169,7 @@ describe('Prediction-vs-actual evaluation', () => {
       expect(result.overallStatus).toBe('UNKNOWN')
     })
 
-    it('includes numeric variance in dimensions', () => {
+    it('includes numeric variance in dimensions', async () => {
       const result = evaluateActionOutcome({
         predictedDurationMonths: 6, actualDurationMonths: 8,
       })
@@ -180,7 +180,7 @@ describe('Prediction-vs-actual evaluation', () => {
   })
 
   describe('evaluateStrategyOutcome (composite)', () => {
-    it('returns MATCHED when trajectory viability matches', () => {
+    it('returns MATCHED when trajectory viability matches', async () => {
       const result = evaluateStrategyOutcome({
         predictedTrajectoryViable: true, actualTrajectoryViable: true,
         predictedTimelineMonths: 60, actualTimelineMonths: 62,
@@ -188,7 +188,7 @@ describe('Prediction-vs-actual evaluation', () => {
       expect(result.overallStatus).toBe('MATCHED')
     })
 
-    it('returns MISSED when trajectory viability differs', () => {
+    it('returns MISSED when trajectory viability differs', async () => {
       const result = evaluateStrategyOutcome({
         predictedTrajectoryViable: true, actualTrajectoryViable: false,
       })

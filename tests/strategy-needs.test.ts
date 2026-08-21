@@ -3,7 +3,7 @@
 // Tests the capability taxonomy, blocker→capability mapping, need inference,
 // desired capability derivation, counterfactual analysis, and demand aggregation.
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
 import {
   CAPABILITY_TAXONOMY,
   classifyBlockerPattern,
@@ -32,16 +32,16 @@ const baseRoutes = generateRoutes(baseState, baseIntent, '2025-06-01')
 // ---------------------------------------------------------------------------
 
 describe('Capability taxonomy', () => {
-  it('has at least 15 canonical capabilities', () => {
+  it('has at least 15 canonical capabilities', async () => {
     expect(CAPABILITY_TAXONOMY.length).toBeGreaterThanOrEqual(15)
   })
 
-  it('each capability has a unique id', () => {
+  it('each capability has a unique id', async () => {
     const ids = CAPABILITY_TAXONOMY.map((c) => c.id)
     expect(new Set(ids).size).toBe(ids.length)
   })
 
-  it('each capability has required fields', () => {
+  it('each capability has required fields', async () => {
     for (const cap of CAPABILITY_TAXONOMY) {
       expect(cap.id).toBeTruthy()
       expect(cap.label).toBeTruthy()
@@ -53,14 +53,14 @@ describe('Capability taxonomy', () => {
     }
   })
 
-  it('getCapabilityDefinition returns the right capability', () => {
+  it('getCapabilityDefinition returns the right capability', async () => {
     const cap = getCapabilityDefinition('EMPLOYER_SPONSORSHIP')
     expect(cap).toBeDefined()
     expect(cap!.label).toBe('Employer Sponsorship')
     expect(cap!.requiresActor).toBe(true)
   })
 
-  it('getCapabilitiesForPattern returns capabilities that resolve the pattern', () => {
+  it('getCapabilitiesForPattern returns capabilities that resolve the pattern', async () => {
     const caps = getCapabilitiesForPattern('employer_sponsorship')
     expect(caps.length).toBeGreaterThan(0)
     expect(caps.some((c) => c.id === 'EMPLOYER_SPONSORSHIP')).toBe(true)
@@ -72,43 +72,43 @@ describe('Capability taxonomy', () => {
 // ---------------------------------------------------------------------------
 
 describe('Blocker pattern classification', () => {
-  it('classifies employer sponsorship blocker', () => {
+  it('classifies employer sponsorship blocker', async () => {
     expect(classifyBlockerPattern('No qualifying employer sponsor', 'Requires employer sponsorship')).toBe('employer_sponsorship')
   })
 
-  it('classifies credential recognition blocker', () => {
+  it('classifies credential recognition blocker', async () => {
     expect(classifyBlockerPattern('Degree not recognized', 'Credential recognition required')).toBe('credential_recognition')
   })
 
-  it('classifies language requirement blocker', () => {
+  it('classifies language requirement blocker', async () => {
     expect(classifyBlockerPattern('German B1 required', 'Language proficiency not met')).toBe('language_requirement')
   })
 
-  it('classifies income threshold blocker', () => {
+  it('classifies income threshold blocker', async () => {
     expect(classifyBlockerPattern('Salary below threshold', 'Income below minimum')).toBe('income_threshold')
   })
 
-  it('classifies savings requirement blocker', () => {
+  it('classifies savings requirement blocker', async () => {
     expect(classifyBlockerPattern('Insufficient savings', 'Funds requirement not met')).toBe('savings_requirement')
   })
 
-  it('classifies accommodation blocker', () => {
+  it('classifies accommodation blocker', async () => {
     expect(classifyBlockerPattern('No qualifying accommodation', 'Housing required')).toBe('accommodation')
   })
 
-  it('classifies incubator support blocker', () => {
+  it('classifies incubator support blocker', async () => {
     expect(classifyBlockerPattern('No incubator letter', 'Business plan not approved')).toBe('incubator_support')
   })
 
-  it('classifies endorsement blocker', () => {
+  it('classifies endorsement blocker', async () => {
     expect(classifyBlockerPattern('No Tech Nation endorsement', 'Endorsement required')).toBe('endorsement')
   })
 
-  it('returns other for unknown patterns', () => {
+  it('returns other for unknown patterns', async () => {
     expect(classifyBlockerPattern('Unknown requirement', 'No details')).toBe('other')
   })
 
-  it('is deterministic — same input always produces same output', () => {
+  it('is deterministic — same input always produces same output', async () => {
     const a = classifyBlockerPattern('Salary below threshold', 'Income')
     const b = classifyBlockerPattern('Salary below threshold', 'Income')
     expect(a).toBe(b)
@@ -120,7 +120,7 @@ describe('Blocker pattern classification', () => {
 // ---------------------------------------------------------------------------
 
 describe('Need inference', () => {
-  it('distinguishes WANT from NEED', () => {
+  it('distinguishes WANT from NEED', async () => {
     const intent = parseIntentDeterministic('I want Portugal.')
     const assessment = inferNeeds(intent)
     expect(assessment.wants.length).toBeGreaterThan(0)
@@ -129,14 +129,14 @@ describe('Need inference', () => {
     expect(assessment.needs[0].label).not.toBe(assessment.wants[0].goal)
   })
 
-  it('NEED is derived from the stated goal', () => {
+  it('NEED is derived from the stated goal', async () => {
     const intent = parseIntentDeterministic('I want to earn more.')
     const assessment = inferNeeds(intent)
     expect(assessment.needs[0].derivedFrom).toBe('earn_more')
     expect(assessment.needs[0].label).toContain('income')
   })
 
-  it('OBJECTIVE is distinct from NEED', () => {
+  it('OBJECTIVE is distinct from NEED', async () => {
     const intent: Intent = {
       ...baseIntent,
       statedGoal: 'second_citizenship',
@@ -147,7 +147,7 @@ describe('Need inference', () => {
     expect(assessment.needs[0].label).not.toBe('citizenship')
   })
 
-  it('CONSTRAINTS remain distinct from NEEDS', () => {
+  it('CONSTRAINTS remain distinct from NEEDS', async () => {
     const intent: Intent = {
       ...baseIntent,
       constraints: [{ kind: 'budget_max' as const, value: '30000', rationale: 'Limited savings' }],
@@ -158,7 +158,7 @@ describe('Need inference', () => {
     expect(assessment.needs[0].label).not.toContain('budget')
   })
 
-  it('PREFERENCES remain distinct from NEEDS', () => {
+  it('PREFERENCES remain distinct from NEEDS', async () => {
     const intent: Intent = {
       ...baseIntent,
       priorities: [{ kind: 'safety_priority' as const, weight: 0.5 }],
@@ -174,7 +174,7 @@ describe('Need inference', () => {
     expect(typeof assessment.needs[0].evidence).toBe('string')
   })
 
-  it('need inference is deterministic', () => {
+  it('need inference is deterministic', async () => {
     const a = inferNeeds(baseIntent)
     const b = inferNeeds(baseIntent)
     expect(a.needs[0].label).toBe(b.needs[0].label)
@@ -187,9 +187,12 @@ describe('Need inference', () => {
 // ---------------------------------------------------------------------------
 
 describe('Desired capability inference', () => {
-  const strategy = buildStrategy(baseState, baseIntent, baseRoutes)
+  let strategy: any
+  beforeAll(async () => {
+    strategy = await buildStrategy(baseState, baseIntent, baseRoutes)
+  })
 
-  it('strategy has needs + desiredCapabilities + capabilityImpact', () => {
+  it('strategy has needs + desiredCapabilities + capabilityImpact', async () => {
     expect(strategy.needs).toBeDefined()
     expect(strategy.desiredCapabilities).toBeDefined()
     expect(strategy.capabilityImpact).toBeDefined()
@@ -207,7 +210,7 @@ describe('Desired capability inference', () => {
     }
   })
 
-  it('desired capabilities use canonical taxonomy IDs', () => {
+  it('desired capabilities use canonical taxonomy IDs', async () => {
     for (const cap of strategy.desiredCapabilities ?? []) {
       const def = getCapabilityDefinition(cap.capabilityId)
       expect(def).toBeDefined()
@@ -244,20 +247,20 @@ describe('Desired capability inference', () => {
 // ---------------------------------------------------------------------------
 
 describe('Counterfactual capability analysis', () => {
-  it('returns a structured result', () => {
+  it('returns a structured result', async () => {
     const result = analyzeCounterfactualCapability('EMPLOYER_SPONSORSHIP', baseRoutes, [])
     expect(result.capabilityId).toBe('EMPLOYER_SPONSORSHIP')
     expect(result.label).toBe('Employer Sponsorship')
     expect(result.explanation).toBeTruthy()
   })
 
-  it('newlyViableTrajectories includes routes that would become viable', () => {
+  it('newlyViableTrajectories includes routes that would become viable', async () => {
     const result = analyzeCounterfactualCapability('LANGUAGE_CERTIFICATION', baseRoutes, [])
     expect(result.newlyViableTrajectories).toBeDefined()
     expect(result.partiallyImproved).toBeDefined()
   })
 
-  it('does not include already-eligible routes', () => {
+  it('does not include already-eligible routes', async () => {
     const result = analyzeCounterfactualCapability('CAPITAL', baseRoutes, [])
     for (const route of result.newlyViableTrajectories) {
       const originalRoute = baseRoutes.find((r) => r.id === route.id || r.label === route.label)
@@ -265,7 +268,7 @@ describe('Counterfactual capability analysis', () => {
     }
   })
 
-  it('explanation is human-readable', () => {
+  it('explanation is human-readable', async () => {
     const result = analyzeCounterfactualCapability('CREDENTIAL_RECOGNITION', baseRoutes, [])
     expect(result.explanation).toContain('Credential Recognition')
   })
@@ -276,8 +279,8 @@ describe('Counterfactual capability analysis', () => {
 // ---------------------------------------------------------------------------
 
 describe('Capability impact summary', () => {
-  it('builds a summary with counts', () => {
-    const strategy = buildStrategy(baseState, baseIntent, baseRoutes)
+  it('builds a summary with counts', async () => {
+    const strategy = await buildStrategy(baseState, baseIntent, baseRoutes)
     const summary = strategy.capabilityImpact!
     expect(summary.totalCapabilities).toBeGreaterThanOrEqual(0)
     expect(summary.impactfulCapabilities).toBeGreaterThanOrEqual(0)
@@ -285,9 +288,9 @@ describe('Capability impact summary', () => {
     expect(summary.explanation).toBeTruthy()
   })
 
-  it('explanation is deterministic', () => {
-    const s1 = buildStrategy(baseState, baseIntent, baseRoutes)
-    const s2 = buildStrategy(baseState, baseIntent, baseRoutes)
+  it('explanation is deterministic', async () => {
+    const s1 = await buildStrategy(baseState, baseIntent, baseRoutes)
+    const s2 = await buildStrategy(baseState, baseIntent, baseRoutes)
     expect(s1.capabilityImpact!.explanation).toBe(s2.capabilityImpact!.explanation)
   })
 })
@@ -330,27 +333,27 @@ describe('Existing architecture intact', () => {
 // ---------------------------------------------------------------------------
 
 describe('Adversarial tests', () => {
-  it('capability cannot be fabricated from a blocker that does not imply it', () => {
+  it('capability cannot be fabricated from a blocker that does not imply it', async () => {
     // A "language requirement" blocker should NOT produce an EMPLOYER_SPONSORSHIP capability
     const pattern = classifyBlockerPattern('German B1 required', 'Language proficiency')
     const caps = getCapabilitiesForPattern(pattern)
     expect(caps.some((c) => c.id === 'EMPLOYER_SPONSORSHIP')).toBe(false)
   })
 
-  it('historical intent remains immutable after need inference', () => {
+  it('historical intent remains immutable after need inference', async () => {
     const original = JSON.parse(JSON.stringify(baseIntent))
     inferNeeds(baseIntent)
     expect(baseIntent).toEqual(original)
   })
 
-  it('counterfactual capability does not pollute strategy history', () => {
+  it('counterfactual capability does not pollute strategy history', async () => {
     // Counterfactual analysis is pure — it doesn't persist anything
     const result = analyzeCounterfactualCapability('CAPITAL', baseRoutes, [])
     expect(result).toBeDefined()
     // No side effects — the function is pure
   })
 
-  it('objective isolation preserved', () => {
+  it('objective isolation preserved', async () => {
     // Needs are derived from the intent, which is objective-scoped
     const incomeIntent = { ...baseIntent, statedGoal: 'earn_more' as const }
     const residenceIntent = { ...baseIntent, statedGoal: 'safer_life_for_family' as const }
@@ -365,7 +368,10 @@ describe('Adversarial tests', () => {
 // ---------------------------------------------------------------------------
 
 describe('N0.5 hardening: provenance + frontier coverage', () => {
-  const strategy = buildStrategy(baseState, baseIntent, baseRoutes)
+  let strategy: any
+  beforeAll(async () => {
+    strategy = await buildStrategy(baseState, baseIntent, baseRoutes)
+  })
 
   it('affectedObjective is populated (not null)', () => {
     for (const cap of strategy.desiredCapabilities ?? []) {
@@ -385,7 +391,7 @@ describe('N0.5 hardening: provenance + frontier coverage', () => {
     }
   })
 
-  it('deduplication does not lose provenance', () => {
+  it('deduplication does not lose provenance', async () => {
     // If CREDENTIAL_RECOGNITION is triggered by 2 different blockers,
     // the capability must have 2 triggers, not 1.
     const caps = strategy.desiredCapabilities ?? []
@@ -419,7 +425,7 @@ describe('N0.5 hardening: provenance + frontier coverage', () => {
     }
   })
 
-  it('MAY_UNLOCK only when all blockers resolved', () => {
+  it('MAY_UNLOCK only when all blockers resolved', async () => {
     for (const cap of strategy.desiredCapabilities ?? []) {
       for (const unlock of cap.potentialUnlocks) {
         if (unlock.relation === 'MAY_UNLOCK') {
@@ -431,7 +437,7 @@ describe('N0.5 hardening: provenance + frontier coverage', () => {
     }
   })
 
-  it('alternative trajectory blockers are considered', () => {
+  it('alternative trajectory blockers are considered', async () => {
     // The strategy has multiple trajectories (best + alternatives).
     // Capabilities should be derived from ALL of them, not just the best.
     const caps = strategy.desiredCapabilities ?? []
@@ -448,9 +454,9 @@ describe('N0.5 hardening: provenance + frontier coverage', () => {
     }
   })
 
-  it('capability output is deterministic (same inputs → same output)', () => {
-    const s1 = buildStrategy(baseState, baseIntent, baseRoutes)
-    const s2 = buildStrategy(baseState, baseIntent, baseRoutes)
+  it('capability output is deterministic (same inputs → same output)', async () => {
+    const s1 = await buildStrategy(baseState, baseIntent, baseRoutes)
+    const s2 = await buildStrategy(baseState, baseIntent, baseRoutes)
     expect(s1.desiredCapabilities?.length).toBe(s2.desiredCapabilities?.length)
     for (let i = 0; i < (s1.desiredCapabilities?.length ?? 0); i++) {
       expect(s1.desiredCapabilities![i].capabilityId).toBe(s2.desiredCapabilities![i].capabilityId)
@@ -464,7 +470,7 @@ describe('N0.5 hardening: provenance + frontier coverage', () => {
     expect(baseIntent).toEqual(original)
   })
 
-  it('counterfactual does not persist history', () => {
+  it('counterfactual does not persist history', async () => {
     const before = Date.now()
     analyzeCounterfactualCapability('CAPITAL', baseRoutes, [])
     const after = Date.now()
@@ -472,12 +478,12 @@ describe('N0.5 hardening: provenance + frontier coverage', () => {
     expect(after).toBeGreaterThanOrEqual(before)
   })
 
-  it('unknown capability IDs cannot be fabricated', () => {
+  it('unknown capability IDs cannot be fabricated', async () => {
     const def = getCapabilityDefinition('FAKE_CAPABILITY' as any)
     expect(def).toBeUndefined()
   })
 
-  it('cross-objective contamination is rejected', () => {
+  it('cross-objective contamination is rejected', async () => {
     // Needs derived from one objective should not bleed into another
     const incomeIntent = { ...baseIntent, statedGoal: 'earn_more' as const }
     const residenceIntent = { ...baseIntent, statedGoal: 'safer_life_for_family' as const }
@@ -503,11 +509,11 @@ describe('N0.5 hardening: provenance + frontier coverage', () => {
     expect(typeof validateProfileUpdates).toBe('function')
   })
 
-  it('multi-route scenario: same capability from multiple trajectories', () => {
+  it('multi-route scenario: same capability from multiple trajectories', async () => {
     // Build a strategy with the full route set — if multiple trajectories
     // have credential recognition blockers, the CREDENTIAL_RECOGNITION
     // capability should have multiple triggers.
-    const s = buildStrategy(baseState, baseIntent, baseRoutes)
+    const s = await buildStrategy(baseState, baseIntent, baseRoutes)
     const credCap = s.desiredCapabilities?.find((c) => c.capabilityId === 'CREDENTIAL_RECOGNITION')
     if (credCap) {
       // It should have at least one trigger

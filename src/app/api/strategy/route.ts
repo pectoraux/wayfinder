@@ -39,7 +39,7 @@ export async function POST(req: Request) {
     })
 
     // 2. Build the strategy using the canonical context's routes
-    const strategy = buildStrategy(body.state, body.intent, context.routes, context)
+    const strategy = await buildStrategy(body.state, body.intent, context.routes, context)
 
     return NextResponse.json({ strategy })
   } catch (err) {

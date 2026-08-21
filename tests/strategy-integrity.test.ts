@@ -169,7 +169,7 @@ async function adoptStrategy(opts: {
 // ---------------------------------------------------------------------------
 
 describe('Strategy provenance', () => {
-  it('StrategyProvenance carries all required fields', () => {
+  it('StrategyProvenance carries all required fields', async () => {
     const provenance: StrategyProvenance = {
       strategyEngineVersion: STRATEGY_ENGINE_VERSION,
       runtimePolicyVersion: 'snap-2024-11',
@@ -190,8 +190,8 @@ describe('Strategy provenance', () => {
     expect(provenance.objectiveId).toBe('residence')
   })
 
-  it('a Strategy built with a context carries policy + engine provenance', () => {
-    const strategy = buildStrategy(baseState, baseIntent, baseRoutes)
+  it('a Strategy built with a context carries policy + engine provenance', async () => {
+    const strategy = await buildStrategy(baseState, baseIntent, baseRoutes)
     expect(strategy.strategyEngineVersion).toBe(STRATEGY_ENGINE_VERSION)
     // policyContext is set when buildStrategy is called with a context
     // (the adopt route passes the canonical context)
@@ -203,7 +203,7 @@ describe('Strategy provenance', () => {
       intent: baseIntent,
       asOfDate: '2025-06-01',
     })
-    const strategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    const strategy = await buildStrategy(baseState, baseIntent, ctx.routes, ctx)
     expect(strategy.policyContext).toBeDefined()
     expect(strategy.policyContext!.runtimeHash).toBe(ctx.policyContext.runtimeHash)
     expect(strategy.policyContext!.runtimeHash).toBeTruthy()
@@ -217,10 +217,11 @@ describe('Strategy provenance', () => {
 
 describe('Staleness — every combination', () => {
   const currentPolicy = getCurrentPolicySnapshot()
+  const baseStrategyTemplate = buildStrategy(baseState, baseIntent, baseRoutes) as any
 
   function makeStrategy(overrides: Partial<Strategy> = {}): Strategy {
     return {
-      ...buildStrategy(baseState, baseIntent, baseRoutes),
+      ...baseStrategyTemplate,
       policyContext: {
         baseSnapshotId: currentPolicy.id,
         activeOverlayIds: [],
@@ -249,7 +250,7 @@ describe('Staleness — every combination', () => {
   ]
 
   for (const c of cases) {
-    it(c.name, () => {
+    it(c.name, async () => {
       const strategy = makeStrategy({
         policyContext: c.dims.policy
           ? { ...makeStrategy().policyContext!, runtimeHash: 'stale-policy-hash' }
@@ -274,7 +275,7 @@ describe('Staleness — every combination', () => {
     })
   }
 
-  it('deriveStalenessStatus is pure — same inputs always produce same output', () => {
+  it('deriveStalenessStatus is pure — same inputs always produce same output', async () => {
     const dims = { policy: true, profile: false, intent: true, engine: false }
     const r1 = deriveStalenessStatus(dims)
     const r2 = deriveStalenessStatus(dims)
@@ -309,7 +310,7 @@ describe('Strategy adoption integrity', () => {
     expect(snap2.version).toBe(2)
     expect(intentRec3.version).toBe(3)
 
-    const strategy = buildStrategy(modifiedState, intent3, baseRoutes)
+    const strategy = await buildStrategy(modifiedState, intent3, baseRoutes)
     const currentPolicy = getCurrentPolicySnapshot()
     const policyContext = {
       baseSnapshotId: currentPolicy.id,
@@ -351,7 +352,7 @@ describe('Strategy adoption integrity', () => {
     const snap = await createMobilitySnapshot(person.id, baseState)
     const intentRec = await createIntentRecord(person.id, baseIntent)
 
-    const strategy = buildStrategy(baseState, baseIntent, baseRoutes)
+    const strategy = await buildStrategy(baseState, baseIntent, baseRoutes)
     const currentPolicy = getCurrentPolicySnapshot()
     const policyContext = {
       baseSnapshotId: currentPolicy.id,
@@ -409,7 +410,7 @@ describe('Strategy adoption integrity', () => {
     const snap = await createMobilitySnapshot(person.id, baseState)
     const intentRec = await createIntentRecord(person.id, baseIntent)
 
-    const strategy = buildStrategy(baseState, baseIntent, baseRoutes)
+    const strategy = await buildStrategy(baseState, baseIntent, baseRoutes)
     const currentPolicy = getCurrentPolicySnapshot()
     const policyContext = {
       baseSnapshotId: currentPolicy.id,
@@ -451,7 +452,7 @@ describe('Strategy adoption integrity', () => {
     const snap = await createMobilitySnapshot(person.id, baseState)
     const intentRec = await createIntentRecord(person.id, baseIntent)
 
-    const strategy = buildStrategy(baseState, baseIntent, baseRoutes)
+    const strategy = await buildStrategy(baseState, baseIntent, baseRoutes)
     const currentPolicy = getCurrentPolicySnapshot()
     const policyContext = {
       baseSnapshotId: currentPolicy.id,
@@ -514,7 +515,7 @@ describe('Strategy adoption integrity', () => {
     const snap = await createMobilitySnapshot(person.id, baseState)
     const intentRec = await createIntentRecord(person.id, baseIntent)
 
-    const strategy = buildStrategy(baseState, baseIntent, baseRoutes)
+    const strategy = await buildStrategy(baseState, baseIntent, baseRoutes)
     const currentPolicy = getCurrentPolicySnapshot()
     const policyContext = {
       baseSnapshotId: currentPolicy.id,
@@ -815,7 +816,7 @@ describe('Strategy replay', () => {
     const ctx = await buildCanonicalPlanningContext({
       state: baseState, intent: baseIntent, asOfDate: '2025-06-01',
     })
-    const strategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    const strategy = await buildStrategy(baseState, baseIntent, ctx.routes, ctx)
     const record = await adoptStrategy({
       userId: replayUserId, personId: person.id, strategy, objectiveId,
       stateSnapshotId: snap.id, stateVersion: snap.version,
@@ -838,7 +839,7 @@ describe('Strategy replay', () => {
     const ctx = await buildCanonicalPlanningContext({
       state: baseState, intent: baseIntent, asOfDate: '2025-06-01',
     })
-    const strategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    const strategy = await buildStrategy(baseState, baseIntent, ctx.routes, ctx)
 
     const record = await adoptStrategy({
       userId: exactUserId, personId: person.id, strategy, objectiveId: 'residence',
@@ -1015,7 +1016,7 @@ describe('Strategy replay', () => {
     const ctx = await buildCanonicalPlanningContext({
       state: baseState, intent: baseIntent, asOfDate: '2025-06-01',
     })
-    const strategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    const strategy = await buildStrategy(baseState, baseIntent, ctx.routes, ctx)
     const record = await adoptStrategy({
       userId: ownerUserId, personId: person.id, strategy, objectiveId: 'residence',
       stateSnapshotId: snap.id, stateVersion: snap.version,
@@ -1135,7 +1136,7 @@ describe('Strategy replay', () => {
     const ctx = await buildCanonicalPlanningContext({
       state: baseState, intent: baseIntent, asOfDate: '2025-06-01',
     })
-    const strategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    const strategy = await buildStrategy(baseState, baseIntent, ctx.routes, ctx)
 
     const record = await adoptStrategy({
       userId: verifyUserId, personId: person.id, strategy, objectiveId: 'residence',
@@ -1249,7 +1250,7 @@ describe('Golden integrity flow — state V1→V2, intent V1→V2, policy V1→V
     const ctxV1 = await buildCanonicalPlanningContext({
       state: stateV1, intent: intentV1, asOfDate: '2025-06-01',
     })
-    const strategyA = buildStrategy(stateV1, intentV1, ctxV1.routes, ctxV1)
+    const strategyA = await buildStrategy(stateV1, intentV1, ctxV1.routes, ctxV1)
     // Set the canonical provenance fields on the strategy (the adopt route
     // does this when persisting — we replicate it here so the staleness
     // check can compare against the stored versions).
@@ -1325,7 +1326,7 @@ describe('Golden integrity flow — state V1→V2, intent V1→V2, policy V1→V
     const ctxV2 = await buildCanonicalPlanningContext({
       state: stateV2, intent: intentV2, asOfDate: '2025-06-01',
     })
-    const strategyB = buildStrategy(stateV2, intentV2, ctxV2.routes, ctxV2)
+    const strategyB = await buildStrategy(stateV2, intentV2, ctxV2.routes, ctxV2)
     // Set provenance on Strategy B too
     strategyB.mobilityStateVersion = snapV2.version
     strategyB.mobilityStateSnapshotId = snapV2.id

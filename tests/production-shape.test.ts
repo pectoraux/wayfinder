@@ -22,7 +22,7 @@ import type { PropagationResult, PlanDiff, PlanStatus } from '@/lib/policy/types
 // ===========================================================================
 
 describe('Propagation result structure', () => {
-  it('PropagationResult has all required fields for the admin UI', () => {
+  it('PropagationResult has all required fields for the admin UI', async () => {
     const result: PropagationResult = {
       propagationId: 'prop-1',
       publicationId: 'pub-1',
@@ -44,7 +44,7 @@ describe('Propagation result structure', () => {
     expect(typeof result.wasNoOp).toBe('boolean')
   })
 
-  it('a PARTIAL status indicates some failures occurred', () => {
+  it('a PARTIAL status indicates some failures occurred', async () => {
     const result: PropagationResult = {
       propagationId: 'prop-2',
       publicationId: 'pub-2',
@@ -61,7 +61,7 @@ describe('Propagation result structure', () => {
     expect(result.failures).toBeGreaterThan(0)
   })
 
-  it('a RUNNING status with hasMore=true indicates more batches needed', () => {
+  it('a RUNNING status with hasMore=true indicates more batches needed', async () => {
     const result: PropagationResult = {
       propagationId: 'prop-3',
       publicationId: 'pub-3',
@@ -85,7 +85,7 @@ describe('Propagation result structure', () => {
 // ===========================================================================
 
 describe('Plan diff', () => {
-  it('produces a structured diff with all required fields', () => {
+  it('produces a structured diff with all required fields', async () => {
     const state = exampleState()
     const intent = parseIntentDeterministic('I want to move abroad.')
     const plan = buildPlan(state, intent, [], '2025-06-01')
@@ -103,7 +103,7 @@ describe('Plan diff', () => {
     expect(diff).toHaveProperty('resolvedBlockers')
   })
 
-  it('detects best route change when the ranking shifts', () => {
+  it('detects best route change when the ranking shifts', async () => {
     const state = exampleState()
     const intent = parseIntentDeterministic('I want to move abroad.')
     const plan1 = buildPlan(state, intent, [], '2025-06-01')
@@ -118,7 +118,7 @@ describe('Plan diff', () => {
     expect(diff.previousBestRoute).toBeDefined()
   })
 
-  it('detects score changes', () => {
+  it('detects score changes', async () => {
     const state = exampleState()
     const intent = parseIntentDeterministic('I want to move abroad.')
     const plan1 = buildPlan(state, intent, [], '2025-06-01')
@@ -138,7 +138,7 @@ describe('Plan diff', () => {
     expect(riskChange!.delta).toBe(10)
   })
 
-  it('detects cost changes', () => {
+  it('detects cost changes', async () => {
     const state = exampleState()
     const intent = parseIntentDeterministic('I want to move abroad.')
     const plan1 = buildPlan(state, intent, [], '2025-06-01')
@@ -156,7 +156,7 @@ describe('Plan diff', () => {
     expect(costChange!.delta).toBe(5000)
   })
 
-  it('detects timeline changes', () => {
+  it('detects timeline changes', async () => {
     const state = exampleState()
     const intent = parseIntentDeterministic('I want to move abroad.')
     const plan1 = buildPlan(state, intent, [], '2025-06-01')
@@ -174,7 +174,7 @@ describe('Plan diff', () => {
     expect(timelineChange!.delta).toBe(6)
   })
 
-  it('summarizes the diff for display', () => {
+  it('summarizes the diff for display', async () => {
     const state = exampleState()
     const intent = parseIntentDeterministic('I want to move abroad.')
     const plan = buildPlan(state, intent, [], '2025-06-01')
@@ -189,7 +189,7 @@ describe('Plan diff', () => {
 // ===========================================================================
 
 describe('Plan status lifecycle', () => {
-  it('PlanStatus has exactly three values', () => {
+  it('PlanStatus has exactly three values', async () => {
     const statuses: PlanStatus[] = ['ACTIVE', 'SUPERSEDED', 'ARCHIVED']
     expect(statuses).toHaveLength(3)
     expect(statuses).toContain('ACTIVE')
@@ -197,13 +197,13 @@ describe('Plan status lifecycle', () => {
     expect(statuses).toContain('ARCHIVED')
   })
 
-  it('a new plan starts as ACTIVE', () => {
+  it('a new plan starts as ACTIVE', async () => {
     // This is enforced by the DB default: planStatus String @default("ACTIVE")
     // and the decision API sets planStatus: 'ACTIVE' explicitly
     expect('ACTIVE').toBe('ACTIVE') // tautology — the real test is in the API
   })
 
-  it('when a new plan is saved, the previous ACTIVE plan becomes SUPERSEDED', () => {
+  it('when a new plan is saved, the previous ACTIVE plan becomes SUPERSEDED', async () => {
     // This is enforced by the decision API:
     //   await db.decisionRecord.updateMany({
     //     where: { userId, planStatus: 'ACTIVE' },
@@ -219,24 +219,24 @@ describe('Plan status lifecycle', () => {
 // ===========================================================================
 
 describe('Alert severity and materiality', () => {
-  it('ROUTE_INVALIDATED produces CRITICAL severity', () => {
+  it('ROUTE_INVALIDATED produces CRITICAL severity', async () => {
     expect(severityForImpact('ROUTE_INVALIDATED')).toBe('CRITICAL')
   })
 
-  it('ROUTE_DEGRADED produces IMPORTANT severity', () => {
+  it('ROUTE_DEGRADED produces IMPORTANT severity', async () => {
     expect(severityForImpact('ROUTE_DEGRADED')).toBe('IMPORTANT')
   })
 
-  it('NEW_BETTER_ROUTE produces NOTICE severity', () => {
+  it('NEW_BETTER_ROUTE produces NOTICE severity', async () => {
     expect(severityForImpact('NEW_BETTER_ROUTE')).toBe('NOTICE')
   })
 
-  it('MINOR_CHANGE and NO_MATERIAL_CHANGE do not produce alerts', () => {
+  it('MINOR_CHANGE and NO_MATERIAL_CHANGE do not produce alerts', async () => {
     expect(isMaterialImpact('MINOR_CHANGE')).toBe(false)
     expect(isMaterialImpact('NO_MATERIAL_CHANGE')).toBe(false)
   })
 
-  it('ROUTE_DEGRADED, ROUTE_INVALIDATED, NEW_BETTER_ROUTE are material', () => {
+  it('ROUTE_DEGRADED, ROUTE_INVALIDATED, NEW_BETTER_ROUTE are material', async () => {
     expect(isMaterialImpact('ROUTE_DEGRADED')).toBe(true)
     expect(isMaterialImpact('ROUTE_INVALIDATED')).toBe(true)
     expect(isMaterialImpact('NEW_BETTER_ROUTE')).toBe(true)
@@ -248,7 +248,7 @@ describe('Alert severity and materiality', () => {
 // ===========================================================================
 
 describe('Idempotency key structure', () => {
-  it('the key is derived from userId + publicationId + planId + impactLevel', () => {
+  it('the key is derived from userId + publicationId + planId + impactLevel', async () => {
     const userId = 'user-1'
     const publicationId = 'pub-1'
     const planId = 'plan-1'
@@ -257,7 +257,7 @@ describe('Idempotency key structure', () => {
     expect(key).toBe('user-1|pub-1|plan-1|ROUTE_INVALIDATED')
   })
 
-  it('different users produce different keys for the same publication', () => {
+  it('different users produce different keys for the same publication', async () => {
     const pub = 'pub-1'
     const plan = 'plan-1'
     const level = 'ROUTE_DEGRADED'
@@ -266,7 +266,7 @@ describe('Idempotency key structure', () => {
     expect(key1).not.toBe(key2)
   })
 
-  it('the same user + publication + plan + level produces the same key', () => {
+  it('the same user + publication + plan + level produces the same key', async () => {
     const key1 = `user-1|pub-1|plan-1|ROUTE_INVALIDATED`
     const key2 = `user-1|pub-1|plan-1|ROUTE_INVALIDATED`
     expect(key1).toBe(key2)
@@ -278,7 +278,7 @@ describe('Idempotency key structure', () => {
 // ===========================================================================
 
 describe('Watchlist deduplication', () => {
-  it('a watchlist alert uses a distinct idempotency key from a plan alert', () => {
+  it('a watchlist alert uses a distinct idempotency key from a plan alert', async () => {
     const userId = 'user-1'
     const publicationId = 'pub-1'
     const planId = 'plan-1'
@@ -302,14 +302,14 @@ describe('Watchlist deduplication', () => {
 // ===========================================================================
 
 describe('Propagation idempotency', () => {
-  it('a COMPLETE propagation returns wasNoOp=true on re-run', () => {
+  it('a COMPLETE propagation returns wasNoOp=true on re-run', async () => {
     // This is enforced by the propagation function:
     //   if (propagation.status === 'COMPLETE') return { wasNoOp: true, ... }
     // The real test is in the integration test
     expect(true).toBe(true)
   })
 
-  it('a RUNNING propagation resumes from the cursor, not from the start', () => {
+  it('a RUNNING propagation resumes from the cursor, not from the start', async () => {
     // This is enforced by the cursor-based pagination:
     //   const cursor = propagation.lastProcessedRecordId
     //   const batch = await db.decisionRecord.findMany({
@@ -319,7 +319,7 @@ describe('Propagation idempotency', () => {
     expect(true).toBe(true)
   })
 
-  it('failed individual plans do not stop the propagation', () => {
+  it('failed individual plans do not stop the propagation', async () => {
     // This is enforced by the try/catch inside the per-record loop:
     //   } catch (e) {
     //     failures++
@@ -334,7 +334,7 @@ describe('Propagation idempotency', () => {
 // ===========================================================================
 
 describe('Route stability', () => {
-  it('stability label is derived from material change count', () => {
+  it('stability label is derived from material change count', async () => {
     function stabilityLabel(count: number): string {
       if (count === 0) return 'Stable'
       if (count <= 1) return 'Low historical volatility'
@@ -347,7 +347,7 @@ describe('Route stability', () => {
     expect(stabilityLabel(4)).toBe('High historical volatility')
   })
 
-  it('insufficient history is reported honestly', () => {
+  it('insufficient history is reported honestly', async () => {
     // The API returns hasInsufficientHistory=true when no DB or code changes exist
     expect(true).toBe(true)
   })

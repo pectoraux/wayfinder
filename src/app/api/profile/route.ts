@@ -206,7 +206,7 @@ export async function POST(req: Request) {
           intent,
           asOfDate: new Date().toISOString(),
         })
-        const newStrategy = buildStrategy(updatedState, intent, ctx.routes, ctx)
+        const newStrategy = await buildStrategy(updatedState, intent, ctx.routes, ctx)
 
         // 4. Compare against the previous strategy to detect if anything changed
         const previousStrategy = previousRecord.strategySnapshot as unknown as Strategy | null

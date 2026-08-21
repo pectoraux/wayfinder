@@ -10,7 +10,7 @@
 //   - Preference elicitation (high-value questions)
 //   - Uncertainty assessment
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
 import { buildTrajectories } from '@/lib/strategy/trajectory'
 import { analyzeBlockers } from '@/lib/strategy/blockers'
 import { buildActionPlan } from '@/lib/strategy/actions'
@@ -32,7 +32,7 @@ const routes = generateRoutes(state, intent, '2025-06-01')
 describe('Trajectory engine', () => {
   const trajectories = buildTrajectories(routes, state, intent)
 
-  it('builds trajectories from routes', () => {
+  it('builds trajectories from routes', async () => {
     expect(trajectories.length).toBeGreaterThan(0)
     for (const t of trajectories) {
       expect(t.id).toMatch(/^traj-/)
@@ -42,38 +42,38 @@ describe('Trajectory engine', () => {
     }
   })
 
-  it('each trajectory has a destination status', () => {
+  it('each trajectory has a destination status', async () => {
     for (const t of trajectories) {
       expect(t.destinationStatus).toBeTruthy()
     }
   })
 
-  it('calculates downstream optionality', () => {
+  it('calculates downstream optionality', async () => {
     for (const t of trajectories) {
       expect(t.downstreamOptionality).toBeGreaterThanOrEqual(0)
     }
   })
 
-  it('marks trajectories as viable or blocked', () => {
+  it('marks trajectories as viable or blocked', async () => {
     for (const t of trajectories) {
       expect(typeof t.viable).toBe('boolean')
     }
   })
 
-  it('includes a rationale for each trajectory', () => {
+  it('includes a rationale for each trajectory', async () => {
     for (const t of trajectories) {
       expect(t.rationale).toBeTruthy()
       expect(t.rationale.length).toBeGreaterThan(10)
     }
   })
 
-  it('step 0 is always the current state', () => {
+  it('step 0 is always the current state', async () => {
     for (const t of trajectories) {
       expect(t.steps[0].status).toBe('Current state')
     }
   })
 
-  it('trajectories that reach PR have cross-country extensions', () => {
+  it('trajectories that reach PR have cross-country extensions', async () => {
     const prTrajectories = trajectories.filter((t) => /permanent|settlement|ilr/i.test(t.destinationStatus))
     const crossCountry = trajectories.filter((t) => t.multiCountry)
     // If there are PR trajectories, there should be cross-country extensions
@@ -91,27 +91,27 @@ describe('Blocker analysis', () => {
   const conditionalRoute = routes.find((r) => r.eligibility.status === 'conditional')
   const blockers = conditionalRoute ? analyzeBlockers(conditionalRoute, state) : []
 
-  it('classifies blockers by category', () => {
+  it('classifies blockers by category', async () => {
     for (const b of blockers) {
       expect(b.category).toMatch(/USER_CONTROLLED|THIRD_PARTY|EXTERNAL|POLICY_DEPENDENT/)
     }
   })
 
-  it('identifies unlocks for each blocker', () => {
+  it('identifies unlocks for each blocker', async () => {
     for (const b of blockers) {
       expect(b.unlocks).toBeDefined()
       expect(Array.isArray(b.unlocks)).toBe(true)
     }
   })
 
-  it('employer blockers are classified as THIRD_PARTY', () => {
+  it('employer blockers are classified as THIRD_PARTY', async () => {
     const employerBlockers = blockers.filter((b) => b.label.toLowerCase().includes('employer') || b.label.toLowerCase().includes('offer'))
     for (const b of employerBlockers) {
       expect(b.category).toBe('THIRD_PARTY')
     }
   })
 
-  it('language blockers are classified as USER_CONTROLLED', () => {
+  it('language blockers are classified as USER_CONTROLLED', async () => {
     // Filter more precisely: only blockers about language requirements
     // (not "German employer" which is about the employer)
     const languageBlockers = blockers.filter((b) => {
@@ -123,7 +123,7 @@ describe('Blocker analysis', () => {
     }
   })
 
-  it('credential blockers are classified as EXTERNAL', () => {
+  it('credential blockers are classified as EXTERNAL', async () => {
     const credentialBlockers = blockers.filter((b) => b.label.toLowerCase().includes('degree') || b.label.toLowerCase().includes('credential'))
     for (const b of credentialBlockers) {
       // Credential recognition could be USER_CONTROLLED (the user initiates it)
@@ -132,19 +132,19 @@ describe('Blocker analysis', () => {
     }
   })
 
-  it('each blocker has a difficulty assessment', () => {
+  it('each blocker has a difficulty assessment', async () => {
     for (const b of blockers) {
       expect(b.difficulty).toMatch(/easy|moderate|hard|very_hard/)
     }
   })
 
-  it('user-controlled blockers have a userAction', () => {
+  it('user-controlled blockers have a userAction', async () => {
     for (const b of blockers.filter((b) => b.category === 'USER_CONTROLLED')) {
       expect(b.userAction).toBeTruthy()
     }
   })
 
-  it('third-party blockers have a thirdPartyRole', () => {
+  it('third-party blockers have a thirdPartyRole', async () => {
     for (const b of blockers.filter((b) => b.category === 'THIRD_PARTY')) {
       expect(b.thirdPartyRole).toBeTruthy()
     }
@@ -162,18 +162,18 @@ describe('Action planner', () => {
   const bestTrajectory = trajectories[0]
   const actionPlan = buildActionPlan(bestTrajectory, blockers)
 
-  it('produces a list of actions', () => {
+  it('produces a list of actions', async () => {
     expect(actionPlan.actions).toBeDefined()
     expect(Array.isArray(actionPlan.actions)).toBe(true)
   })
 
-  it('actions have a timeframe', () => {
+  it('actions have a timeframe', async () => {
     for (const a of actionPlan.actions) {
       expect(a.timeframe).toMatch(/7_DAYS|30_DAYS|90_DAYS|6_MONTHS|ONGOING/)
     }
   })
 
-  it('actions have an impact score 0..1', () => {
+  it('actions have an impact score 0..1', async () => {
     for (const a of actionPlan.actions) {
       expect(a.impact).toBeGreaterThanOrEqual(0)
       expect(a.impact).toBeLessThanOrEqual(1)
@@ -187,14 +187,14 @@ describe('Action planner', () => {
     }
   })
 
-  it('the highest-leverage action is the first action', () => {
+  it('the highest-leverage action is the first action', async () => {
     if (actionPlan.actions.length > 0) {
       expect(actionPlan.highestLeverageAction).toBeDefined()
       expect(actionPlan.highestLeverageAction?.id).toBe(actionPlan.actions[0].id)
     }
   })
 
-  it('the action plan has a summary', () => {
+  it('the action plan has a summary', async () => {
     expect(actionPlan.summary).toBeTruthy()
   })
 })
@@ -206,7 +206,7 @@ describe('Action planner', () => {
 describe('Profile analysis', () => {
   const profile = analyzeProfile(state, intent, routes)
 
-  it('identifies the user\'s top assets', () => {
+  it('identifies the user\'s top assets', async () => {
     expect(profile.topAssets.length).toBeGreaterThan(0)
     for (const a of profile.topAssets) {
       expect(a.label).toBeTruthy()
@@ -214,7 +214,7 @@ describe('Profile analysis', () => {
     }
   })
 
-  it('identifies the user\'s biggest gaps', () => {
+  it('identifies the user\'s biggest gaps', async () => {
     expect(profile.topGaps.length).toBeGreaterThanOrEqual(0)
     for (const g of profile.topGaps) {
       expect(g.label).toBeTruthy()
@@ -222,24 +222,24 @@ describe('Profile analysis', () => {
     }
   })
 
-  it('software occupation is a high-leverage asset', () => {
+  it('software occupation is a high-leverage asset', async () => {
     const softwareAsset = profile.topAssets.find((a) => a.attribute === 'occupation')
     expect(softwareAsset).toBeDefined()
     expect(softwareAsset!.leverage).toBeGreaterThan(0.5)
   })
 
-  it('remote work is identified as a rare asset', () => {
+  it('remote work is identified as a rare asset', async () => {
     const remoteAsset = profile.topAssets.find((a) => a.attribute === 'remote_work')
     if (remoteAsset) {
       expect(remoteAsset.rare).toBe(true)
     }
   })
 
-  it('counts current viable trajectories', () => {
+  it('counts current viable trajectories', async () => {
     expect(profile.currentViableTrajectories).toBeGreaterThanOrEqual(0)
   })
 
-  it('identifies the highest-leverage change', () => {
+  it('identifies the highest-leverage change', async () => {
     expect(profile.highestLeverageChange).toBeDefined()
     if (profile.highestLeverageChange) {
       expect(profile.highestLeverageChange.label).toBeTruthy()
@@ -247,7 +247,7 @@ describe('Profile analysis', () => {
     }
   })
 
-  it('post-change viable trajectories >= current', () => {
+  it('post-change viable trajectories >= current', async () => {
     expect(profile.postChangeViableTrajectories).toBeGreaterThanOrEqual(profile.currentViableTrajectories)
   })
 })
@@ -257,39 +257,42 @@ describe('Profile analysis', () => {
 // ===========================================================================
 
 describe('Full strategy output', () => {
-  const strategy = buildStrategy(state, intent, routes)
+  let strategy: any
+  beforeAll(async () => {
+    strategy = await buildStrategy(state, intent, routes)
+  })
 
-  it('has a best trajectory', () => {
+  it('has a best trajectory', async () => {
     expect(strategy.bestTrajectory).toBeDefined()
     expect(strategy.bestTrajectory.label).toBeTruthy()
   })
 
-  it('has alternative trajectories', () => {
+  it('has alternative trajectories', async () => {
     expect(strategy.alternativeTrajectories).toBeDefined()
     expect(Array.isArray(strategy.alternativeTrajectories)).toBe(true)
   })
 
-  it('has blocker analysis', () => {
+  it('has blocker analysis', async () => {
     expect(strategy.blockers).toBeDefined()
     expect(Array.isArray(strategy.blockers)).toBe(true)
   })
 
-  it('has an action plan', () => {
+  it('has an action plan', async () => {
     expect(strategy.actionPlan).toBeDefined()
     expect(strategy.actionPlan.actions).toBeDefined()
   })
 
-  it('has profile analysis', () => {
+  it('has profile analysis', async () => {
     expect(strategy.profileAnalysis).toBeDefined()
     expect(strategy.profileAnalysis.topAssets.length).toBeGreaterThan(0)
   })
 
-  it('has an intent frontier', () => {
+  it('has an intent frontier', async () => {
     expect(strategy.intentFrontier).toBeDefined()
     expect(strategy.intentFrontier.points.length).toBeGreaterThan(0)
   })
 
-  it('has alternative intents', () => {
+  it('has alternative intents', async () => {
     expect(strategy.alternativeIntents).toBeDefined()
   })
 
@@ -297,24 +300,28 @@ describe('Full strategy output', () => {
     expect(strategy.preferenceQuestions.length).toBeLessThanOrEqual(3)
   })
 
-  it('has uncertainty assessment', () => {
+  it('has uncertainty assessment', async () => {
     expect(strategy.uncertainties.length).toBeGreaterThan(0)
     const eligibility = strategy.uncertainties.find((u) => u.dimension === 'Legal eligibility')
     expect(eligibility).toBeDefined()
   })
 
-  it('real-world approval outcome is UNKNOWN', () => {
+  it('real-world approval outcome is UNKNOWN', async () => {
     const outcome = strategy.uncertainties.find((u) => u.dimension === 'Real-world approval outcome')
     expect(outcome).toBeDefined()
     expect(outcome!.confidence).toBe('UNKNOWN')
   })
 
-  it('has a deterministic explanation', () => {
+  it('has a deterministic explanation', async () => {
     expect(strategy.explanation).toBeTruthy()
-    expect(strategy.explanation.length).toBeGreaterThan(20)
+    // N0.6: explanation is now a StrategyExplanation object, not a string
+    const explanationText = typeof strategy.explanation === 'string'
+      ? strategy.explanation
+      : strategy.explanation?.summary ?? ''
+    expect(explanationText.length).toBeGreaterThan(20)
   })
 
-  it('has a highest-leverage change', () => {
+  it('has a highest-leverage change', async () => {
     expect(strategy.highestLeverageChange).toBeDefined()
   })
 })
@@ -324,7 +331,10 @@ describe('Full strategy output', () => {
 // ===========================================================================
 
 describe('Preference elicitation', () => {
-  const strategy = buildStrategy(state, intent, routes)
+  let strategy: any
+  beforeAll(async () => {
+    strategy = await buildStrategy(state, intent, routes)
+  })
 
   it('questions are high-value (they affect the ranking)', () => {
     for (const q of strategy.preferenceQuestions) {
@@ -333,7 +343,7 @@ describe('Preference elicitation', () => {
     }
   })
 
-  it('each question has at least 2 options', () => {
+  it('each question has at least 2 options', async () => {
     for (const q of strategy.preferenceQuestions) {
       expect(q.options.length).toBeGreaterThanOrEqual(2)
     }
@@ -345,22 +355,24 @@ describe('Preference elicitation', () => {
 // ===========================================================================
 
 describe('Intent frontier', () => {
-  const strategy = buildStrategy(state, intent, routes)
-  const frontier = strategy.intentFrontier
-
-  it('has multiple objectives', () => {
-    expect(frontier.points.length).toBeGreaterThanOrEqual(3)
+  let strategy: any
+  beforeAll(async () => {
+    strategy = await buildStrategy(state, intent, routes)
   })
 
-  it('each objective has a best trajectory', () => {
-    for (const p of frontier.points) {
+  it('has multiple objectives', async () => {
+    expect(strategy.intentFrontier.points.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it('each objective has a best trajectory', async () => {
+    for (const p of strategy.intentFrontier.points) {
       expect(p.bestTrajectoryId).toBeTruthy()
       expect(p.bestTrajectoryLabel).toBeTruthy()
     }
   })
 
-  it('each objective has cost, time, risk, and optionality', () => {
-    for (const p of frontier.points) {
+  it('each objective has cost, time, risk, and optionality', async () => {
+    for (const p of strategy.intentFrontier.points) {
       expect(typeof p.cost).toBe('number')
       expect(typeof p.timeMonths).toBe('number')
       expect(p.risk).toMatch(/low|medium|high/)
@@ -374,9 +386,12 @@ describe('Intent frontier', () => {
 // ===========================================================================
 
 describe('Enabler safety', () => {
-  const strategy = buildStrategy(state, intent, routes)
+  let strategy: any
+  beforeAll(async () => {
+    strategy = await buildStrategy(state, intent, routes)
+  })
 
-  it('no unlock suggests fake employment', () => {
+  it('no unlock suggests fake employment', async () => {
     for (const u of strategy.unlocks) {
       expect(u.description.toLowerCase()).not.toContain('fake')
       expect(u.description.toLowerCase()).not.toContain('sham')
@@ -384,7 +399,7 @@ describe('Enabler safety', () => {
     }
   })
 
-  it('all unlocks are user-actionable or require legitimate enablers', () => {
+  it('all unlocks are user-actionable or require legitimate enablers', async () => {
     for (const u of strategy.unlocks) {
       // Either the user can do it, or there are enabler ids
       expect(u.userActionable === true || u.enablerIds.length > 0).toBe(true)

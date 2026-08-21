@@ -33,7 +33,7 @@ const baseCandidate: CandidateFact = {
 }
 
 describe('PolicyEvent creation', () => {
-  it('builds a PolicyEvent from a verified candidate fact', () => {
+  it('builds a PolicyEvent from a verified candidate fact', async () => {
     const event = buildPolicyEvent({
       publicationId: 'pub-1',
       candidateFactId: 'cand-test',
@@ -61,7 +61,7 @@ describe('PolicyEvent creation', () => {
     expect(event.provenance).toBe('AUTHORITATIVE')
   })
 
-  it('generates a descriptive title for a threshold increase', () => {
+  it('generates a descriptive title for a threshold increase', async () => {
     const event = buildPolicyEvent({
       publicationId: 'pub-1',
       candidateFactId: 'cand-1',
@@ -81,7 +81,7 @@ describe('PolicyEvent creation', () => {
     expect(event.title).toContain('increased')
   })
 
-  it('generates a descriptive title for a threshold decrease', () => {
+  it('generates a descriptive title for a threshold decrease', async () => {
     const event = buildPolicyEvent({
       publicationId: 'pub-1',
       candidateFactId: 'cand-1',
@@ -100,7 +100,7 @@ describe('PolicyEvent creation', () => {
     expect(event.title).toContain('decreased')
   })
 
-  it('generates a title for a program suspension', () => {
+  it('generates a title for a program suspension', async () => {
     const event = buildPolicyEvent({
       publicationId: 'pub-1',
       candidateFactId: 'cand-1',
@@ -117,7 +117,7 @@ describe('PolicyEvent creation', () => {
     expect(event.changeType).toBe('program_suspended')
   })
 
-  it('includes a summary with old and new values', () => {
+  it('includes a summary with old and new values', async () => {
     const event = buildPolicyEvent({
       publicationId: 'pub-1',
       candidateFactId: 'cand-1',
@@ -137,7 +137,7 @@ describe('PolicyEvent creation', () => {
     expect(event.summary).toContain('64,000')
   })
 
-  it('prefers the AI interpretation for the summary when available', () => {
+  it('prefers the AI interpretation for the summary when available', async () => {
     const event = buildPolicyEvent({
       publicationId: 'pub-1',
       candidateFactId: 'cand-1',
@@ -157,7 +157,7 @@ describe('PolicyEvent creation', () => {
     expect(event.summary).toContain('German government')
   })
 
-  it('defaults to AUTHORITATIVE provenance', () => {
+  it('defaults to AUTHORITATIVE provenance', async () => {
     const event = buildPolicyEvent({
       publicationId: 'pub-1',
       candidateFactId: 'cand-1',
@@ -173,7 +173,7 @@ describe('PolicyEvent creation', () => {
     expect(event.provenance).toBe('AUTHORITATIVE')
   })
 
-  it('can be marked as SIMULATED for test fixtures', () => {
+  it('can be marked as SIMULATED for test fixtures', async () => {
     const event = buildPolicyEvent({
       publicationId: 'pub-sim',
       candidateFactId: 'cand-sim',
@@ -190,7 +190,7 @@ describe('PolicyEvent creation', () => {
     expect(event.provenance).toBe('SIMULATED')
   })
 
-  it('maps unknown change kinds to "other"', () => {
+  it('maps unknown change kinds to "other"', async () => {
     const event = buildPolicyEvent({
       publicationId: 'pub-1',
       candidateFactId: 'cand-1',
@@ -206,7 +206,7 @@ describe('PolicyEvent creation', () => {
     expect(event.changeType).toBe('other')
   })
 
-  it('has a stable, unique id', () => {
+  it('has a stable, unique id', async () => {
     const opts = {
       publicationId: 'pub-1',
       candidateFactId: 'cand-1',
@@ -225,7 +225,7 @@ describe('PolicyEvent creation', () => {
     expect(event1.id).toMatch(/^evt-/) // stable prefix
   })
 
-  it('includes the evidence and source URL', () => {
+  it('includes the evidence and source URL', async () => {
     const event = buildPolicyEvent({
       publicationId: 'pub-1',
       candidateFactId: 'cand-1',
@@ -242,7 +242,7 @@ describe('PolicyEvent creation', () => {
     expect(event.sourceUrl).toBe('https://make-it-in-germany.com/eu-blue-card')
   })
 
-  it('is created with status PUBLISHED and a publishedAt timestamp', () => {
+  it('is created with status PUBLISHED and a publishedAt timestamp', async () => {
     const event = buildPolicyEvent({
       publicationId: 'pub-1',
       candidateFactId: 'cand-1',
@@ -261,7 +261,7 @@ describe('PolicyEvent creation', () => {
 })
 
 describe('PolicyEvent lifecycle', () => {
-  it('starts as PUBLISHED', () => {
+  it('starts as PUBLISHED', async () => {
     const event = buildPolicyEvent({
       publicationId: 'pub-1',
       candidateFactId: 'cand-1',
@@ -278,7 +278,7 @@ describe('PolicyEvent lifecycle', () => {
     expect(event.supersededByEventId).toBeUndefined()
   })
 
-  it('can be superseded by a newer event', () => {
+  it('can be superseded by a newer event', async () => {
     // This would be done by updating the DB record:
     //   db.policyEvent.update({ where: { id }, data: { status: 'SUPERSEDED', supersededByEventId: newId } })
     // The type supports it:

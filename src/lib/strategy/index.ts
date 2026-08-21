@@ -18,12 +18,12 @@ import { rankRoutes } from '@/lib/engine/optimize'
 import type { Preference } from '@/lib/domain/types'
 
 /** Build the full strategy output from the user's state + intent + canonical context. */
-export function buildStrategy(
+export async function buildStrategy(
   state: MobilityState,
   intent: Intent,
   routes: Route[],
   context?: CanonicalPlanningContext,
-): Strategy {
+): Promise<Strategy> {
   // 1. Build trajectories
   const trajectories = buildTrajectories(routes, state, intent)
   const viableTrajectories = trajectories.filter((t) => t.viable)
@@ -75,7 +75,10 @@ export function buildStrategy(
   const desiredCapabilities = inferDesiredCapabilities(trajectoryBlockerAssociations, objectiveId, routes)
   const capabilityImpact = buildCapabilityImpactSummary(desiredCapabilities, trajectories)
 
-  return {
+  // 11. N0.6 — Decision Graph + Explainability
+  // Build the strategy object first (without graph/explanation), then
+  // generate the graph + explanation from it.
+  const strategyWithoutGraph: Strategy = {
     state,
     intent,
     bestTrajectory,
@@ -103,6 +106,16 @@ export function buildStrategy(
     needs,
     desiredCapabilities,
     capabilityImpact,
+  }
+
+  const { buildDecisionGraph, generateExplanation } = await import('./decision-graph')
+  const decisionGraph = buildDecisionGraph(strategyWithoutGraph)
+  const strategyExplanation = generateExplanation(strategyWithoutGraph, decisionGraph)
+
+  return {
+    ...strategyWithoutGraph,
+    decisionGraph,
+    explanation: strategyExplanation,
   }
 }
 

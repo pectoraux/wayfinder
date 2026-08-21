@@ -72,7 +72,7 @@ async function createIntentRecord(personId: string, intent: Intent) {
 // ---------------------------------------------------------------------------
 
 describe('Profile update validation', () => {
-  it('accepts valid updates for editable fields', () => {
+  it('accepts valid updates for editable fields', async () => {
     const result = validateProfileUpdates({
       age: 30,
       annualIncomeUSD: 95000,
@@ -85,7 +85,7 @@ describe('Profile update validation', () => {
     expect(result.validatedUpdates.annualIncomeUSD).toBe(95000)
   })
 
-  it('rejects unknown fields', () => {
+  it('rejects unknown fields', async () => {
     const result = validateProfileUpdates({
       age: 30,
       unknownField: 'malicious',
@@ -98,29 +98,29 @@ describe('Profile update validation', () => {
     expect(result.validatedUpdates.age).toBe(30)
   })
 
-  it('rejects invalid education level', () => {
+  it('rejects invalid education level', async () => {
     const result = validateProfileUpdates({ education: 'invalid_level' })
     expect(result.valid).toBe(false)
     expect(result.errors.some((e) => e.includes('education must be one of'))).toBe(true)
   })
 
-  it('rejects invalid occupation category', () => {
+  it('rejects invalid occupation category', async () => {
     const result = validateProfileUpdates({ occupationCategory: 'invalid_cat' })
     expect(result.valid).toBe(false)
   })
 
-  it('rejects negative income', () => {
+  it('rejects negative income', async () => {
     const result = validateProfileUpdates({ annualIncomeUSD: -1000 })
     expect(result.valid).toBe(false)
     expect(result.errors.some((e) => e.includes('non-negative'))).toBe(true)
   })
 
-  it('rejects invalid language CEFR', () => {
+  it('rejects invalid language CEFR', async () => {
     const result = validateProfileUpdates({ languages: [{ language: 'en', cefr: 'X5' }] })
     expect(result.valid).toBe(false)
   })
 
-  it('accepts null values for nullable fields', () => {
+  it('accepts null values for nullable fields', async () => {
     const result = validateProfileUpdates({
       age: null,
       education: null,
@@ -129,7 +129,7 @@ describe('Profile update validation', () => {
     expect(result.valid).toBe(true)
   })
 
-  it('accepts valid arrays for country-code fields', () => {
+  it('accepts valid arrays for country-code fields', async () => {
     const result = validateProfileUpdates({
       nationalities: ['KE', 'UG'],
       credentialRecognizedIn: ['DE'],
@@ -150,20 +150,20 @@ describe('Profile update validation', () => {
 // ---------------------------------------------------------------------------
 
 describe('applyValidatedUpdates', () => {
-  it('preserves USER_CONFIRMED provenance on updated fields', () => {
+  it('preserves USER_CONFIRMED provenance on updated fields', async () => {
     const updated = applyValidatedUpdates(baseState, { annualIncomeUSD: 95000 })
     expect(updated.annualIncomeUSD.value).toBe(95000)
     expect(updated.annualIncomeUSD.status).toBe('confirmed_by_user')
     expect(updated.annualIncomeUSD.provenance).toBe('user_edit')
   })
 
-  it('does NOT mutate the input state', () => {
+  it('does NOT mutate the input state', async () => {
     const original = JSON.parse(JSON.stringify(baseState))
     applyValidatedUpdates(baseState, { annualIncomeUSD: 95000 })
     expect(baseState.annualIncomeUSD.value).toBe(original.annualIncomeUSD.value)
   })
 
-  it('updates capturedAt', () => {
+  it('updates capturedAt', async () => {
     const updated = applyValidatedUpdates(baseState, { age: 30 })
     expect(updated.capturedAt).not.toBe(baseState.capturedAt)
   })
@@ -237,7 +237,7 @@ describe('Profile editor (DB-backed)', () => {
     const { person, snap, intentRec } = await setupBaseProfile()
     // Create a strategy record for the old state
     const ctx1 = await buildCanonicalPlanningContext({ state: baseState, intent: baseIntent, asOfDate: '2025-06-01' })
-    const strategy1 = buildStrategy(baseState, baseIntent, ctx1.routes, ctx1)
+    const strategy1 = await buildStrategy(baseState, baseIntent, ctx1.routes, ctx1)
     const record1 = await db.decisionRecord.create({
       data: {
         personId: person.id, userId: editorUserId,
@@ -265,7 +265,7 @@ describe('Profile editor (DB-backed)', () => {
 
     // Create a new strategy record with the new state
     const ctx2 = await buildCanonicalPlanningContext({ state: newState, intent: baseIntent, asOfDate: '2025-06-01' })
-    const strategy2 = buildStrategy(newState, baseIntent, ctx2.routes, ctx2)
+    const strategy2 = await buildStrategy(newState, baseIntent, ctx2.routes, ctx2)
     const record2 = await db.decisionRecord.create({
       data: {
         personId: person.id, userId: editorUserId,
@@ -292,7 +292,7 @@ describe('Profile editor (DB-backed)', () => {
   it('historical strategy remains immutable after profile change', async () => {
     const { person, snap } = await setupBaseProfile()
     const ctx = await buildCanonicalPlanningContext({ state: baseState, intent: baseIntent, asOfDate: '2025-06-01' })
-    const strategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    const strategy = await buildStrategy(baseState, baseIntent, ctx.routes, ctx)
     const record = await db.decisionRecord.create({
       data: {
         personId: person.id, userId: editorUserId,
@@ -324,7 +324,7 @@ describe('Profile editor (DB-backed)', () => {
     // Simulate a preview: build a strategy with modified state but do NOT persist
     const previewState = applyValidatedUpdates(baseState, { annualIncomeUSD: 999999 })
     const ctx = await buildCanonicalPlanningContext({ state: previewState, intent: baseIntent, asOfDate: '2025-06-01' })
-    const _previewStrategy = buildStrategy(previewState, baseIntent, ctx.routes, ctx)
+    const _previewStrategy = await buildStrategy(previewState, baseIntent, ctx.routes, ctx)
     // Note: we do NOT create a DecisionRecord here — preview only
 
     const countAfter = await db.decisionRecord.count({ where: { userId: editorUserId } })
@@ -334,7 +334,7 @@ describe('Profile editor (DB-backed)', () => {
   it('replay of historical pre-update strategy still reproduces the old strategy', async () => {
     const { person, snap, intentRec } = await setupBaseProfile()
     const ctx = await buildCanonicalPlanningContext({ state: baseState, intent: baseIntent, asOfDate: '2025-06-01' })
-    const strategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    const strategy = await buildStrategy(baseState, baseIntent, ctx.routes, ctx)
     const record = await db.decisionRecord.create({
       data: {
         personId: person.id, userId: editorUserId,
@@ -378,7 +378,7 @@ describe('Multi-objective profile recomputation', () => {
     const snap = await createMobilitySnapshot(person.id, state)
     const intentRec = await createIntentRecord(person.id, intent)
     const ctx = await buildCanonicalPlanningContext({ state, intent, asOfDate: '2025-06-01' })
-    const strategy = buildStrategy(state, intent, ctx.routes, ctx)
+    const strategy = await buildStrategy(state, intent, ctx.routes, ctx)
 
     // Supersede any previous ACTIVE for this objective
     await db.decisionRecord.updateMany({
@@ -452,7 +452,7 @@ describe('Multi-objective profile recomputation', () => {
       const ctx = await buildCanonicalPlanningContext({
         state: newState, intent, asOfDate: '2025-06-01',
       })
-      const newStrategy = buildStrategy(newState, intent, ctx.routes, ctx)
+      const newStrategy = await buildStrategy(newState, intent, ctx.routes, ctx)
 
       // Supersede + create new record
       await db.decisionRecord.updateMany({
@@ -525,7 +525,7 @@ describe('Multi-objective profile recomputation', () => {
     const snap = await createMobilitySnapshot(person.id, baseState)
     const intentRec = await createIntentRecord(person.id, baseIntent)
     const ctx = await buildCanonicalPlanningContext({ state: baseState, intent: baseIntent, asOfDate: '2025-06-01' })
-    const strategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    const strategy = await buildStrategy(baseState, baseIntent, ctx.routes, ctx)
 
     await db.decisionRecord.create({
       data: {
@@ -622,7 +622,7 @@ async function adoptForObjectiveWithUserId(userId: string, objectiveId: string, 
   const snap = await createMobilitySnapshot(person.id, state)
   const intentRec = await createIntentRecord(person.id, intent)
   const ctx = await buildCanonicalPlanningContext({ state, intent, asOfDate: '2025-06-01' })
-  const strategy = buildStrategy(state, intent, ctx.routes, ctx)
+  const strategy = await buildStrategy(state, intent, ctx.routes, ctx)
 
   await db.decisionRecord.updateMany({
     where: { userId, planStatus: 'ACTIVE', objectiveId },
@@ -662,7 +662,7 @@ describe('Objective-isolated intent recomputation (N0.3b)', () => {
     // Create a SEPARATE IntentRecord for this objective (not shared)
     const intentRec = await createIntentRecord(person.id, intent)
     const ctx = await buildCanonicalPlanningContext({ state: baseState, intent, asOfDate: '2025-06-01' })
-    const strategy = buildStrategy(baseState, intent, ctx.routes, ctx)
+    const strategy = await buildStrategy(baseState, intent, ctx.routes, ctx)
 
     await db.decisionRecord.updateMany({
       where: { userId: isoIntentUserId, planStatus: 'ACTIVE', objectiveId },
@@ -736,7 +736,7 @@ describe('Objective-isolated intent recomputation (N0.3b)', () => {
 
       // Recompute with the objective's OWN intent
       const ctx = await buildCanonicalPlanningContext({ state: newState, intent, asOfDate: '2025-06-01' })
-      const newStrategy = buildStrategy(newState, intent, ctx.routes, ctx)
+      const newStrategy = await buildStrategy(newState, intent, ctx.routes, ctx)
 
       // Supersede + create new record with the CORRECT intentRecordId
       await db.decisionRecord.updateMany({
@@ -828,7 +828,7 @@ describe('Objective-isolated intent recomputation (N0.3b)', () => {
     const snap = await createMobilitySnapshot(person.id, baseState)
     const intentRec = await createIntentRecord(person.id, baseIntent)
     const ctx = await buildCanonicalPlanningContext({ state: baseState, intent: baseIntent, asOfDate: '2025-06-01' })
-    const strategy = buildStrategy(baseState, baseIntent, ctx.routes, ctx)
+    const strategy = await buildStrategy(baseState, baseIntent, ctx.routes, ctx)
 
     const record = await db.decisionRecord.create({
       data: {
@@ -901,7 +901,7 @@ async function entrepreneurAdopt(this: any, userId: string, objectiveId: string,
   const snap = await createMobilitySnapshot(person.id, baseState)
   const intentRec = await createIntentRecord(person.id, intent)
   const ctx = await buildCanonicalPlanningContext({ state: baseState, intent, asOfDate: '2025-06-01' })
-  const strategy = buildStrategy(baseState, intent, ctx.routes, ctx)
+  const strategy = await buildStrategy(baseState, intent, ctx.routes, ctx)
 
   await db.decisionRecord.updateMany({
     where: { userId, planStatus: 'ACTIVE', objectiveId },

@@ -596,7 +596,7 @@ export async function verifyStrategyRecord(
 
       if (context) {
         try {
-          const replayedStrategy = buildStrategy(state, intent, context.routes, context)
+          const replayedStrategy = await buildStrategy(state, intent, context.routes, context)
           checks.replaySucceeded = true
           const comparison = compareStrategyReplay(storedStrategy, replayedStrategy)
           if (comparison.exact) {
@@ -762,7 +762,7 @@ export async function replayStrategy(
   // 5. Rebuild the strategy using the current engine
   let replayedStrategy: Strategy
   try {
-    replayedStrategy = buildStrategy(state, intent, context.routes, context)
+    replayedStrategy = await buildStrategy(state, intent, context.routes, context)
   } catch (err) {
     return {
       status: 'REPLAY_FAILED',
