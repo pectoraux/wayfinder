@@ -22,7 +22,15 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { db } from '@/lib/db'
 import { evaluateStrategyOutcome } from '@/lib/strategy/evaluation'
+import {
+  evaluateStrategyOutcomeN07,
+  validateOutcomeType,
+  validateProvenance,
+  deriveStrategyOutcomeTypeFromGraph,
+  deriveConfidenceLevel,
+} from '@/lib/strategy/outcome-intelligence'
 import { deriveStrategyPrediction } from '@/lib/strategy/prediction'
+import { buildDecisionGraph } from '@/lib/strategy/decision-graph'
 import type { Strategy } from '@/lib/strategy/types'
 import { createHash } from 'crypto'
 
@@ -38,6 +46,11 @@ interface StrategyOutcomeBody {
   actualTimelineMonths?: number
   actualTotalCostUSD?: number
   notes?: string
+  /** N0.7: Optional outcome type override (validated). */
+  outcomeType?: string
+  /** N0.7: Client-provided provenance is REJECTED. Server always sets
+   *  USER_REPORTED for client submissions. Documented but ignored. */
+  provenance?: string
   eventId?: string
 }
 
@@ -107,12 +120,65 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
 
     // 6. Create a NEW immutable outcome event.
-    //    Provenance is ALWAYS USER_REPORTED for client submissions.
+    //    N0.7: Symmetric with the action-level route — uses N0.7 semantics:
+    //    outcomeType, evaluationStatus, expectedOutcomeId, confidenceLevel,
+    //    graphNodeId (all validated against the historical graph).
+
+    // Resolve the existing expected strategy outcome (SYSTEM_DERIVED)
+    const existingExpected = await db.strategyOutcome.findFirst({
+      where: { decisionRecordId, provenance: 'SYSTEM_DERIVED' },
+      orderBy: { createdAt: 'desc' },
+    })
+
+    // Reconstruct the historical graph from the strategy snapshot
+    const historicalGraph = strategy ? buildDecisionGraph(strategy) : null
+
+    // N0.7: outcomeType from the graph (authoritative), or carry forward
+    // from the expected outcome, or UNKNOWN.
+    const validatedType = body.outcomeType ? validateOutcomeType(body.outcomeType) : null
+    const graphOutcomeType = (historicalGraph && strategy)
+      ? deriveStrategyOutcomeTypeFromGraph(historicalGraph, strategy)
+      : 'UNKNOWN'
+    const outcomeType = validatedType
+      ?? (existingExpected?.outcomeType as any)
+      ?? graphOutcomeType
+      ?? 'UNKNOWN'
+
+    // N0.7: confidenceLevel from the historical strategy (qualitative)
+    const confidenceLevel = strategy
+      ? deriveConfidenceLevel(strategy)
+      : (existingExpected?.confidenceLevel as any) ?? 'UNKNOWN'
+
+    // N0.7: Client cannot claim EXTERNALLY_VERIFIED
+    const validatedProvenance = body.provenance
+      ? validateProvenance(body.provenance, true)
+      : null
+    const finalProvenance = validatedProvenance ?? 'USER_REPORTED'
+
+    // N0.7: Compute deterministic evaluationStatus
+    const n07Evaluation = evaluateStrategyOutcomeN07({
+      predictedTrajectoryViable: prediction.predictedTrajectoryViable,
+      actualTrajectoryViable: body.actualTrajectoryViable ?? null,
+      predictedTimelineMonths: prediction.predictedTimelineMonths,
+      actualTimelineMonths: body.actualTimelineMonths ?? null,
+      predictedTotalCostUSD: prediction.predictedTotalCostUSD,
+      actualTotalCostUSD: body.actualTotalCostUSD ?? null,
+      strategyFollowed,
+      expectedOutcomeId: existingExpected?.id ?? decisionRecordId,
+      provenance: finalProvenance,
+    })
+
     const outcome = await db.strategyOutcome.create({
       data: {
         userId,
         decisionRecordId,
         objectiveId: record.objectiveId,
+        // N0.7 fields
+        outcomeType,
+        graphNodeId: existingExpected?.graphNodeId ?? null,
+        confidenceLevel,
+        expectedOutcomeId: existingExpected?.id ?? null,
+        evaluationStatus: n07Evaluation.status,
         // Actual observations — client-submitted
         strategyFollowed,
         objectiveAchieved,
@@ -125,7 +191,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         predictedTimelineMonths: prediction.predictedTimelineMonths,
         predictedTotalCostUSD: prediction.predictedTotalCostUSD,
         // Provenance — server-controlled
-        provenance: 'USER_REPORTED',
+        provenance: finalProvenance,
         notes: body.notes ?? null,
         idempotencyKey,
       },
@@ -141,7 +207,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       strategyFollowed: outcome.strategyFollowed,
     })
 
-    return NextResponse.json({ outcome, evaluation, idempotent: false }, { status: 201 })
+    return NextResponse.json({ outcome, evaluation, n07Evaluation, idempotent: false }, { status: 201 })
   } catch (err) {
     console.error('[/api/strategy/[id]/outcome]', err)
     return NextResponse.json({ error: 'Failed to record outcome' }, { status: 500 })

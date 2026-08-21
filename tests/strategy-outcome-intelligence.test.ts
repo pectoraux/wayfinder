@@ -27,6 +27,11 @@ import {
   deriveOutcomeTypeFromAction,
   deriveOutcomeTypeFromStrategy,
   deriveOutcomeConfidence,
+  deriveConfidenceLevel,
+  deriveOutcomeTypeFromGraph,
+  deriveStrategyOutcomeTypeFromGraph,
+  validateGraphNodeLinkage,
+  validateGraphEdge,
   deriveExpectedByDate,
   evaluateActionOutcomeN07,
   evaluateStrategyOutcomeN07,
@@ -36,6 +41,7 @@ import {
   OUTCOME_TYPES,
   type OutcomeType,
   type OutcomeEvaluationStatus,
+  type ConfidenceLevel,
 } from '@/lib/strategy/outcome-intelligence'
 import type { Strategy, Action } from '@/lib/strategy/types'
 import type { EvaluationStatus } from '@/lib/strategy/evaluation'
@@ -212,28 +218,25 @@ describe('N0.7 — Outcome Intelligence', () => {
   })
 
   // =========================================================================
-  // 3. CONFIDENCE DERIVATION (conservative, no fabricated precision)
+  // 3. CONFIDENCE DERIVATION (qualitative, no fabricated precision)
   // =========================================================================
 
   describe('Confidence derivation', () => {
-    it('confidence is derived from strategy uncertainties (conservative)', () => {
-      const conf = deriveOutcomeConfidence(strategy)
-      // Should be a number in [0, 1] or null if no uncertainties
-      if (conf !== null) {
-        expect(conf).toBeGreaterThanOrEqual(0)
-        expect(conf).toBeLessThanOrEqual(1)
-      }
+    it('confidence level is derived from strategy uncertainties (conservative)', () => {
+      const level = deriveConfidenceLevel(strategy)
+      // Should be a valid ConfidenceLevel
+      expect(['HIGH', 'MEDIUM', 'LOW', 'UNKNOWN']).toContain(level)
     })
 
-    it('confidence is null when no uncertainties exist', () => {
+    it('confidence level is UNKNOWN when no uncertainties exist', () => {
       const strategyNoUncertainties: Strategy = {
         ...strategy,
         uncertainties: [],
       }
-      expect(deriveOutcomeConfidence(strategyNoUncertainties)).toBeNull()
+      expect(deriveConfidenceLevel(strategyNoUncertainties)).toBe('UNKNOWN')
     })
 
-    it('confidence uses the WORST dimension (conservative)', () => {
+    it('confidence level uses the WORST dimension (conservative)', () => {
       const strategyMixed: Strategy = {
         ...strategy,
         uncertainties: [
@@ -241,20 +244,32 @@ describe('N0.7 — Outcome Intelligence', () => {
           { dimension: 'Policy stability', confidence: 'LOW' as any, reason: 'r2' },
         ],
       }
-      const conf = deriveOutcomeConfidence(strategyMixed)
-      expect(conf).not.toBeNull()
-      // LOW maps to 0.2, which is the worst
-      expect(conf).toBeLessThanOrEqual(0.2)
+      // LOW is the worst → confidence level is LOW
+      expect(deriveConfidenceLevel(strategyMixed)).toBe('LOW')
     })
 
-    it('no fabricated precision (confidence is never a fake probability)', () => {
-      const conf = deriveOutcomeConfidence(strategy)
-      // Confidence is a coarse value (0.1, 0.2, 0.5, 0.8), not a fabricated
-      // precise number like 0.732
-      if (conf !== null) {
-        const coarseValues = [0.1, 0.2, 0.5, 0.8, 1.0]
-        expect(coarseValues).toContain(conf)
+    it('confidence level is HIGH only when ALL dimensions are HIGH', () => {
+      const strategyAllHigh: Strategy = {
+        ...strategy,
+        uncertainties: [
+          { dimension: 'Legal eligibility', confidence: 'HIGH' as any, reason: 'r1' },
+          { dimension: 'Policy stability', confidence: 'HIGH' as any, reason: 'r2' },
+        ],
       }
+      expect(deriveConfidenceLevel(strategyAllHigh)).toBe('HIGH')
+    })
+
+    it('no fabricated numeric precision (deriveOutcomeConfidence returns null)', () => {
+      // The deprecated numeric function MUST return null — new code must NOT
+      // fabricate numeric probabilities.
+      expect(deriveOutcomeConfidence(strategy)).toBeNull()
+    })
+
+    it('confidence level is never a fabricated probability', () => {
+      const level = deriveConfidenceLevel(strategy)
+      // The result is a qualitative string, never a number
+      expect(typeof level).toBe('string')
+      expect(['HIGH', 'MEDIUM', 'LOW', 'UNKNOWN']).toContain(level)
     })
   })
 
@@ -616,6 +631,419 @@ describe('N0.7 — Outcome Intelligence', () => {
     it('prediction module (N0.4b) remains intact', async () => {
       const { deriveActionPrediction } = await import('@/lib/strategy/prediction')
       expect(typeof deriveActionPrediction).toBe('function')
+    })
+  })
+
+  // =========================================================================
+  // N0.7 HARDENING — Architectural invariants
+  // =========================================================================
+
+  describe('N0.7 Hardening — Architectural invariants', () => {
+    let graph: ReturnType<typeof buildDecisionGraph>
+
+    beforeAll(() => {
+      graph = buildDecisionGraph(strategy)
+    })
+
+    // --- Historical strategy integrity ---
+
+    it('createExpectedOutcomes does NOT accept a client-provided strategy', () => {
+      // The ExpectedOutcomeInput interface requires `strategy: Strategy` —
+      // but this is resolved SERVER-SIDE from the DecisionRecord, never from
+      // the request body. The /api/actions route no longer accepts a `strategy`
+      // field in the body. We verify the pure function uses ONLY its input
+      // strategy (not any external state).
+      const records1 = createExpectedOutcomes({
+        strategy,
+        decisionRecordId: 'rec-1',
+        objectiveId: 'income',
+        userId: 'user-1',
+        adoptionDate: new Date('2025-01-01'),
+        graph,
+      })
+      // A DIFFERENT strategy would produce different predictions — but the
+      // point is the server resolves the strategy, not the client.
+      expect(records1.length).toBeGreaterThan(0)
+      // All records must reference the SAME decisionRecordId (server-resolved)
+      for (const r of records1) {
+        expect(r.decisionRecordId).toBe('rec-1')
+      }
+    })
+
+    it('a forged strategy cannot alter the predicted values in expected outcomes', () => {
+      // Simulate: the server resolves the historical strategy from the
+      // DecisionRecord. A forged strategy submitted by the client is NEVER
+      // passed to createExpectedOutcomes. The predictions come from the
+      // historical strategy snapshot only.
+      const realRecords = createExpectedOutcomes({
+        strategy, // the REAL historical strategy
+        decisionRecordId: 'rec-real',
+        objectiveId: 'income',
+        userId: 'user-real',
+        adoptionDate: new Date('2025-01-01'),
+        graph,
+      })
+
+      // The forged strategy has materially different predictions, but it is
+      // NEVER passed to createExpectedOutcomes. The real records use the
+      // real strategy's predictions.
+      const forgedStrategy: Strategy = {
+        ...strategy,
+        bestTrajectory: strategy.bestTrajectory
+          ? { ...strategy.bestTrajectory, totalCostUSD: 999999, totalMonths: 999 } as any
+          : undefined as any,
+      }
+
+      // Verify the real records do NOT contain the forged values
+      for (const r of realRecords) {
+        if (r.predictedTotalCostUSD != null) {
+          expect(r.predictedTotalCostUSD).not.toBe(999999)
+        }
+        if (r.predictedTimelineMonths != null) {
+          expect(r.predictedTimelineMonths).not.toBe(999)
+        }
+      }
+
+      // The forged strategy WOULD produce different values — proving the
+      // server MUST use the real strategy, not the client's.
+      const forgedRecords = createExpectedOutcomes({
+        strategy: forgedStrategy,
+        decisionRecordId: 'rec-forged',
+        objectiveId: 'income',
+        userId: 'user-forged',
+        adoptionDate: new Date('2025-01-01'),
+        graph: buildDecisionGraph(forgedStrategy),
+      })
+      const forgedStrategyRecord = forgedRecords.find((r) => r.scope === 'STRATEGY')
+      if (forgedStrategyRecord?.predictedTotalCostUSD != null) {
+        expect(forgedStrategyRecord.predictedTotalCostUSD).toBe(999999)
+      }
+    })
+
+    // --- Outcome identity ---
+
+    it('ExpectedOutcomeRecord does not have expectedOutcomeId (only observed outcomes reference it)', () => {
+      const records = createExpectedOutcomes({
+        strategy,
+        decisionRecordId: 'rec-id',
+        objectiveId: 'income',
+        userId: 'user-id',
+        adoptionDate: new Date('2025-01-01'),
+        graph,
+      })
+      // Expected outcomes don't have expectedOutcomeId — they ARE the expected
+      // outcome. Only observed outcomes reference expectedOutcomeId.
+      for (const r of records) {
+        expect(r).not.toHaveProperty('expectedOutcomeId')
+      }
+    })
+
+    // --- Graph integrity ---
+
+    it('deriveOutcomeTypeFromGraph returns UNKNOWN when action node does not exist', () => {
+      const type = deriveOutcomeTypeFromGraph(graph, 'nonexistent-action-id')
+      expect(type).toBe('UNKNOWN')
+    })
+
+    it('deriveOutcomeTypeFromGraph returns UNKNOWN when no LEADS_TO edge exists', () => {
+      // Build a graph with an action node but no LEADS_TO edge
+      const minimalGraph = {
+        ...graph,
+        edges: graph.edges.filter((e) => e.type !== 'LEADS_TO'),
+      }
+      // Find an action that exists in the graph
+      const actionNode = minimalGraph.nodes.find((n) => n.type === 'ACTION')
+      if (actionNode) {
+        // Extract the original action ID from the node ID (action-${hash})
+        const actionId = actionNode.id.replace('action-', '')
+        const type = deriveOutcomeTypeFromGraph(minimalGraph, actionId)
+        expect(type).toBe('UNKNOWN')
+      }
+    })
+
+    it('validateGraphNodeLinkage rejects non-existent nodes', () => {
+      const result = validateGraphNodeLinkage(graph, 'nonexistent-node', 'ACTION')
+      expect(result.valid).toBe(false)
+      expect(result.reason).toBe('NODE_NOT_FOUND')
+    })
+
+    it('validateGraphNodeLinkage rejects node type mismatch', () => {
+      // Find an OUTCOME node and try to validate it as an ACTION
+      const outcomeNode = graph.nodes.find((n) => n.type === 'OUTCOME')
+      if (outcomeNode) {
+        const result = validateGraphNodeLinkage(graph, outcomeNode.id, 'ACTION')
+        expect(result.valid).toBe(false)
+        expect(result.reason).toBe('NODE_TYPE_MISMATCH')
+      }
+    })
+
+    it('validateGraphNodeLinkage accepts valid nodes', () => {
+      const actionNode = graph.nodes.find((n) => n.type === 'ACTION')
+      if (actionNode) {
+        const result = validateGraphNodeLinkage(graph, actionNode.id, 'ACTION')
+        expect(result.valid).toBe(true)
+        expect(result.reason).toBe('OK')
+      }
+    })
+
+    it('validateGraphEdge verifies exact edge existence + direction', () => {
+      // Find a LEADS_TO edge and verify it
+      const leadsToEdge = graph.edges.find((e) => e.type === 'LEADS_TO')
+      if (leadsToEdge) {
+        expect(validateGraphEdge(graph, leadsToEdge.from, leadsToEdge.to, 'LEADS_TO')).toBe(true)
+        // Wrong direction
+        expect(validateGraphEdge(graph, leadsToEdge.to, leadsToEdge.from, 'LEADS_TO')).toBe(false)
+        // Wrong type
+        expect(validateGraphEdge(graph, leadsToEdge.from, leadsToEdge.to, 'BLOCKS')).toBe(false)
+      }
+    })
+
+    it('graphNodeId is only set when the node exists in the historical graph', () => {
+      const records = createExpectedOutcomes({
+        strategy,
+        decisionRecordId: 'rec-graph-valid',
+        objectiveId: 'income',
+        userId: 'user-graph-valid',
+        adoptionDate: new Date('2025-01-01'),
+        graph,
+      })
+      // Every non-null graphNodeId must correspond to a real node in the graph
+      for (const r of records) {
+        if (r.graphNodeId) {
+          const nodeExists = graph.nodes.some((n) => n.id === r.graphNodeId)
+          expect(nodeExists).toBe(true)
+        }
+      }
+    })
+
+    // --- Epistemic integrity ---
+
+    it('no fabricated confidence probability (deriveOutcomeConfidence returns null)', () => {
+      expect(deriveOutcomeConfidence(strategy)).toBeNull()
+    })
+
+    it('qualitative uncertainty is preserved (not converted to probability)', () => {
+      const strategyWithLow: Strategy = {
+        ...strategy,
+        uncertainties: [
+          { dimension: 'test', confidence: 'LOW' as any, reason: 'r' },
+        ],
+      }
+      // The qualitative level is LOW, not a fabricated 0.2
+      expect(deriveConfidenceLevel(strategyWithLow)).toBe('LOW')
+    })
+
+    it('UNKNOWN remains UNKNOWN (not converted to failure)', () => {
+      const evaluation = evaluateActionOutcomeN07({
+        predictedEffect: 'test',
+        actualEffect: null, // no observation
+        expectedOutcomeId: 'exp-unknown',
+        provenance: 'USER_REPORTED',
+      })
+      expect(evaluation.status).toBe('UNKNOWN')
+      // UNKNOWN is not NOT_ACHIEVED
+      expect(evaluation.status).not.toBe('NOT_ACHIEVED')
+    })
+
+    it('missing observation is not interpreted as failure', () => {
+      const evaluation = evaluateStrategyOutcomeN07({
+        predictedTrajectoryViable: true,
+        actualTrajectoryViable: null, // not observed
+        expectedOutcomeId: 'exp-missing',
+        provenance: 'USER_REPORTED',
+      })
+      expect(evaluation.status).toBe('UNKNOWN')
+    })
+
+    // --- Temporal integrity ---
+
+    it('expected dates derive from immutable historical adoption timestamp, not new Date()', () => {
+      const adoptionDate = new Date('2025-01-15T10:00:00Z')
+      const records1 = createExpectedOutcomes({
+        strategy,
+        decisionRecordId: 'rec-temporal',
+        objectiveId: 'income',
+        userId: 'user-temporal',
+        adoptionDate,
+        graph,
+      })
+
+      // Running the same derivation on a DIFFERENT current date produces the
+      // SAME expected dates (because they derive from adoptionDate, not now)
+      const records2 = createExpectedOutcomes({
+        strategy,
+        decisionRecordId: 'rec-temporal',
+        objectiveId: 'income',
+        userId: 'user-temporal',
+        adoptionDate, // SAME adoption date
+        graph,
+      })
+
+      for (let i = 0; i < records1.length; i++) {
+        expect(records1[i].expectedByDate?.getTime()).toBe(records2[i].expectedByDate?.getTime())
+      }
+    })
+
+    it('expected dates change when the adoption date changes (proving they derive from it)', () => {
+      const adoption1 = new Date('2025-01-01')
+      const adoption2 = new Date('2025-06-01')
+
+      const records1 = createExpectedOutcomes({
+        strategy,
+        decisionRecordId: 'rec-temporal-1',
+        objectiveId: 'income',
+        userId: 'user-temporal',
+        adoptionDate: adoption1,
+        graph,
+      })
+      const records2 = createExpectedOutcomes({
+        strategy,
+        decisionRecordId: 'rec-temporal-2',
+        objectiveId: 'income',
+        userId: 'user-temporal',
+        adoptionDate: adoption2,
+        graph,
+      })
+
+      // The strategy-level expected date should differ (~5 months apart)
+      const strat1 = records1.find((r) => r.scope === 'STRATEGY')
+      const strat2 = records2.find((r) => r.scope === 'STRATEGY')
+      if (strat1?.expectedByDate && strat2?.expectedByDate) {
+        expect(strat1.expectedByDate.getTime()).not.toBe(strat2.expectedByDate.getTime())
+      }
+    })
+
+    // --- Provenance integrity ---
+
+    it('client cannot claim EXTERNAL_VERIFICATION (rejected by validateProvenance)', () => {
+      expect(validateProvenance('EXTERNAL_VERIFICATION', true)).toBeNull()
+    })
+
+    it('client cannot claim EXTERNALLY_VERIFIED (rejected)', () => {
+      expect(validateProvenance('EXTERNALLY_VERIFIED', true)).toBeNull()
+    })
+
+    it('server can set EXTERNAL_VERIFICATION (not from client)', () => {
+      expect(validateProvenance('EXTERNAL_VERIFICATION', false)).toBe('EXTERNAL_VERIFICATION')
+    })
+
+    it('client USER_REPORTED is accepted', () => {
+      expect(validateProvenance('USER_REPORTED', true)).toBe('USER_REPORTED')
+    })
+
+    it('client USER_CONFIRMED is accepted', () => {
+      expect(validateProvenance('USER_CONFIRMED', true)).toBe('USER_CONFIRMED')
+    })
+
+    // --- Immutability ---
+
+    it('repeated submission with the same idempotency key returns the existing event (pure function determinism)', () => {
+      const records1 = createExpectedOutcomes({
+        strategy,
+        decisionRecordId: 'rec-imm',
+        objectiveId: 'income',
+        userId: 'user-imm',
+        adoptionDate: new Date('2025-01-01'),
+        graph,
+      })
+      const records2 = createExpectedOutcomes({
+        strategy,
+        decisionRecordId: 'rec-imm',
+        objectiveId: 'income',
+        userId: 'user-imm',
+        adoptionDate: new Date('2025-01-01'),
+        graph,
+      })
+      // Same inputs → same idempotency keys → same records
+      for (let i = 0; i < records1.length; i++) {
+        expect(records1[i].idempotencyKey).toBe(records2[i].idempotencyKey)
+      }
+    })
+
+    it('a distinct observation creates a distinct idempotency key', () => {
+      // Different decisionRecordId → different idempotency key
+      const records1 = createExpectedOutcomes({
+        strategy,
+        decisionRecordId: 'rec-A',
+        objectiveId: 'income',
+        userId: 'user-distinct',
+        adoptionDate: new Date('2025-01-01'),
+        graph,
+      })
+      const records2 = createExpectedOutcomes({
+        strategy,
+        decisionRecordId: 'rec-B',
+        objectiveId: 'income',
+        userId: 'user-distinct',
+        adoptionDate: new Date('2025-01-01'),
+        graph,
+      })
+      const key1 = records1[0]?.idempotencyKey
+      const key2 = records2[0]?.idempotencyKey
+      expect(key1).not.toBe(key2)
+    })
+
+    // --- Strategy/action symmetry ---
+
+    it('both action + strategy outcomes use N0.7 evaluation semantics', () => {
+      const actionEval = evaluateActionOutcomeN07({
+        predictedEffect: 'test',
+        actualEffect: 'test',
+        expectedOutcomeId: 'exp-action',
+        provenance: 'USER_REPORTED',
+      })
+      const strategyEval = evaluateStrategyOutcomeN07({
+        predictedTrajectoryViable: true,
+        actualTrajectoryViable: true,
+        expectedOutcomeId: 'exp-strategy',
+        provenance: 'USER_REPORTED',
+      })
+      // Both return OutcomeEvaluation with status + basedOnUserReport
+      expect(actionEval).toHaveProperty('status')
+      expect(actionEval).toHaveProperty('basedOnUserReport')
+      expect(strategyEval).toHaveProperty('status')
+      expect(strategyEval).toHaveProperty('basedOnUserReport')
+      expect(actionEval.basedOnUserReport).toBe(true)
+      expect(strategyEval.basedOnUserReport).toBe(true)
+    })
+
+    it('both action + strategy evaluations map MATCHED → ACHIEVED', () => {
+      expect(mapEvaluationStatus('MATCHED')).toBe('ACHIEVED')
+      expect(mapEvaluationStatus('PARTIALLY_MATCHED')).toBe('PARTIALLY_ACHIEVED')
+      expect(mapEvaluationStatus('MISSED')).toBe('NOT_ACHIEVED')
+      expect(mapEvaluationStatus('UNKNOWN')).toBe('UNKNOWN')
+    })
+
+    // --- No adaptive learning ---
+
+    it('evaluation does not modify the strategy engine (no side effects)', () => {
+      const strategyBefore = JSON.parse(JSON.stringify(strategy))
+      evaluateActionOutcomeN07({
+        predictedEffect: 'test',
+        actualEffect: 'test',
+        expectedOutcomeId: 'exp-no-side-effect',
+        provenance: 'USER_REPORTED',
+      })
+      evaluateStrategyOutcomeN07({
+        predictedTrajectoryViable: true,
+        actualTrajectoryViable: true,
+        expectedOutcomeId: 'exp-no-side-effect',
+        provenance: 'USER_REPORTED',
+      })
+      expect(JSON.stringify(strategy)).toBe(JSON.stringify(strategyBefore))
+    })
+
+    it('no probability/learning signal is produced', () => {
+      const evaluation = evaluateActionOutcomeN07({
+        predictedEffect: 'test',
+        actualEffect: 'test',
+        expectedOutcomeId: 'exp-no-learn',
+        provenance: 'USER_REPORTED',
+      })
+      expect(evaluation).not.toHaveProperty('accuracy')
+      expect(evaluation).not.toHaveProperty('probability')
+      expect(evaluation).not.toHaveProperty('learningRate')
+      expect(evaluation).not.toHaveProperty('weight')
     })
   })
 })

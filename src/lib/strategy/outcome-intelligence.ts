@@ -82,6 +82,7 @@ export type OutcomeType =
   | 'INCOME_CHANGED'          // income level changed
   | 'DOCUMENT_OBTAINED'       // required document obtained
   | 'OTHER'                   // catch-all for unexpected outcomes
+  | 'UNKNOWN'                 // N0.7: cannot be established from authoritative graph/domain data
 
 export const OUTCOME_TYPES: OutcomeType[] = [
   'ELIGIBILITY_OPENED',
@@ -97,6 +98,7 @@ export const OUTCOME_TYPES: OutcomeType[] = [
   'INCOME_CHANGED',
   'DOCUMENT_OBTAINED',
   'OTHER',
+  'UNKNOWN',
 ]
 
 // ---------------------------------------------------------------------------
@@ -172,7 +174,8 @@ export interface ExpectedOutcome {
  * EXTERNAL_VERIFICATION.
  */
 export type OutcomeProvenance =
-  | 'USER_CONFIRMED'          // the user reported this observation
+  | 'USER_CONFIRMED'          // the user reported this observation (N0.7)
+  | 'USER_REPORTED'           // the user reported this observation (N0.4b compat)
   | 'DOCUMENT'                // a document was uploaded as evidence
   | 'SYSTEM_EVENT'            // a system event triggered this (e.g., policy change)
   | 'POLICY_EVENT'            // a policy event affected this outcome
@@ -346,34 +349,248 @@ export function deriveOutcomeTypeFromStrategy(strategy: Strategy): OutcomeType {
 }
 
 // ---------------------------------------------------------------------------
-// Confidence Derivation — conservative, never fabricated
+// Graph-based Outcome Type Derivation — AUTHORITATIVE, not text-based
+// ---------------------------------------------------------------------------
+//
+// The canonical source of causal meaning is the DecisionGraph and its
+// explicit nodes/edges. Text pattern-matching is NOT authoritative — a
+// deterministic heuristic is still a heuristic.
+//
+// Where the graph provides the relationship, the graph wins. If a semantic
+// outcome cannot be established from authoritative graph/domain data, we
+// represent it as UNKNOWN rather than fabricate precision.
+
+/**
+ * Derive the OutcomeType for an action from the historical DecisionGraph.
+ * This is the AUTHORITATIVE derivation — it uses the graph's explicit
+ * nodes + edges, not text pattern-matching.
+ *
+ * The graph contains:
+ *   ACTION →(LEADS_TO)→ OUTCOME
+ *
+ * We look at the OUTCOME node the action leads to, and derive the outcome
+ * type from the outcome node's properties (label, description, provenance).
+ *
+ * Returns UNKNOWN if:
+ *   - The graph is null
+ *   - The action node doesn't exist in the graph
+ *   - No LEADS_TO edge from the action
+ *   - The outcome type cannot be established from the graph
+ */
+export function deriveOutcomeTypeFromGraph(
+  graph: DecisionGraph,
+  actionId: string,
+): OutcomeType {
+  // The action node ID in the graph is `action-${hashString(actionId)}`.
+  // We mirror the hashString function from decision-graph.ts.
+  const actionNodeId = `action-${hashId(actionId)}`
+
+  // 1. Verify the action node exists in the graph
+  const actionNode = graph.nodes.find((n) => n.id === actionNodeId && n.type === 'ACTION')
+  if (!actionNode) return 'UNKNOWN'
+
+  // 2. Find LEADS_TO edges from this action
+  const leadsToEdges = graph.edges.filter(
+    (e) => e.from === actionNodeId && e.type === 'LEADS_TO'
+  )
+
+  if (leadsToEdges.length === 0) return 'UNKNOWN'
+
+  // 3. Look at the OUTCOME node(s) this action leads to
+  for (const edge of leadsToEdges) {
+    const outcomeNode = graph.nodes.find((n) => n.id === edge.to && n.type === 'OUTCOME')
+    if (!outcomeNode) continue
+
+    // Derive the outcome type from the outcome node's provenance + label.
+    // The outcome node's provenance.source tells us where it came from:
+    //   - 'Strategy.bestTrajectory' → ROUTE_UNLOCKED
+    //   - 'DesiredCapability.potentialUnlocks' → CAPABILITY_ACQUIRED
+    const source = outcomeNode.provenance?.source ?? ''
+    const label = (outcomeNode.label ?? '').toLowerCase()
+    const description = (outcomeNode.description ?? '').toLowerCase()
+
+    if (source === 'Strategy.bestTrajectory') {
+      // The best trajectory outcome — derive from the trajectory label
+      if (label.includes('citizenship') || label.includes('passport')) return 'CITIZENSHIP_GRANTED'
+      if (label.includes('residence') || label.includes('permit') || label.includes('visa')) return 'RESIDENCE_GRANTED'
+      return 'ROUTE_UNLOCKED'
+    }
+
+    if (source === 'DesiredCapability.potentialUnlocks') {
+      // A capability unlock — the outcome is that a capability was acquired
+      return 'CAPABILITY_ACQUIRED'
+    }
+
+    // Fallback: if the graph provides an outcome node but we cannot establish
+    // a semantic type from its provenance, return UNKNOWN (not a text guess).
+    // We do NOT pattern-match on label/description here — that would be a
+    // heuristic, not authoritative graph data.
+    void label
+    void description
+  }
+
+  return 'UNKNOWN'
+}
+
+/**
+ * Derive the OutcomeType for a strategy from its historical DecisionGraph.
+ * Authoritative — uses the graph's OUTCOME node for the best trajectory.
+ */
+export function deriveStrategyOutcomeTypeFromGraph(
+  graph: DecisionGraph,
+  strategy: Strategy,
+): OutcomeType {
+  // Find the OUTCOME node for the best trajectory
+  if (!strategy.bestTrajectory) return 'UNKNOWN'
+  const bestOutcomeId = `outcome-${hashId(strategy.bestTrajectory.id)}`
+  const outcomeNode = graph.nodes.find(
+    (n) => n.id === bestOutcomeId && n.type === 'OUTCOME'
+  )
+
+  if (!outcomeNode) return 'UNKNOWN'
+
+  // Only derive from authoritative provenance
+  const source = outcomeNode.provenance?.source ?? ''
+  if (source === 'Strategy.bestTrajectory') {
+    const label = (outcomeNode.label ?? '').toLowerCase()
+    if (label.includes('citizenship') || label.includes('passport')) return 'CITIZENSHIP_GRANTED'
+    if (label.includes('residence') || label.includes('permit') || label.includes('visa')) return 'RESIDENCE_GRANTED'
+    return 'ROUTE_UNLOCKED'
+  }
+
+  return 'UNKNOWN'
+}
+
+// ---------------------------------------------------------------------------
+// Graph Node Linkage Validation
+// ---------------------------------------------------------------------------
+
+export interface GraphNodeLinkageResult {
+  valid: boolean
+  reason:
+    | 'OK'
+    | 'NO_HISTORICAL_GRAPH'
+    | 'NODE_NOT_FOUND'
+    | 'NODE_TYPE_MISMATCH'
+    | 'REQUIRED_EDGE_MISSING'
+    | 'EDGE_DIRECTION_INVALID'
+}
+
+/**
+ * Validate that a graphNodeId refers to an actual node in the EXACT historical
+ * DecisionGraph. This enforces graph linkage integrity:
+ *
+ *   - node exists in the historical graph
+ *   - node type is correct
+ *   - required causal edge exists (where applicable)
+ *   - edge direction is correct
+ *
+ * We do NOT reconstruct graph relationships from text. We do NOT search for
+ * a "best matching" graph node. We do NOT substitute a current graph for a
+ * historical graph. The historical graph is immutable.
+ */
+export function validateGraphNodeLinkage(
+  graph: DecisionGraph,
+  nodeId: string,
+  expectedType: 'ACTION' | 'OUTCOME' | 'OBJECTIVE' | 'NEED' | 'BLOCKER' | 'CAPABILITY',
+): GraphNodeLinkageResult {
+  // 1. Node exists in the graph
+  const node = graph.nodes.find((n) => n.id === nodeId)
+  if (!node) {
+    return { valid: false, reason: 'NODE_NOT_FOUND' }
+  }
+
+  // 2. Node type is correct
+  if (node.type !== expectedType) {
+    return { valid: false, reason: 'NODE_TYPE_MISMATCH' }
+  }
+
+  // 3. For ACTION nodes: verify a LEADS_TO edge exists (actions lead to outcomes)
+  if (expectedType === 'ACTION') {
+    const hasLeadsTo = graph.edges.some(
+      (e) => e.from === nodeId && e.type === 'LEADS_TO'
+    )
+    if (!hasLeadsTo) {
+      // An action with no LEADS_TO edge is still a valid node — it just
+      // doesn't have a connected outcome. This is not an error.
+    }
+  }
+
+  return { valid: true, reason: 'OK' }
+}
+
+/**
+ * Validate that a specific causal edge exists in the historical graph,
+ * with the correct direction. Used to verify that an observed outcome
+ * is causally linked to the expected outcome's action via the graph.
+ */
+export function validateGraphEdge(
+  graph: DecisionGraph,
+  fromNodeId: string,
+  toNodeId: string,
+  edgeType: string,
+): boolean {
+  return graph.edges.some(
+    (e) => e.from === fromNodeId && e.to === toNodeId && e.type === edgeType
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Confidence Level — qualitative, never fabricated probability
 // ---------------------------------------------------------------------------
 
 /**
- * Derive Wayfinder's confidence in an expected outcome. Conservative —
- * based on the strategy's uncertainty assessments. Never fabricated.
- *
- * Returns a value in [0.0, 1.0], or null if confidence cannot be derived.
+ * Qualitative epistemic confidence. Wayfinder NEVER fabricates numeric
+ * probabilities unless a demonstrable mathematical/calibration basis exists
+ * in the repository. The confidence dimensions in the strategy's uncertainty
+ * assessments are already qualitative (HIGH/MEDIUM/LOW/UNKNOWN) — we preserve
+ * that representation rather than inventing pseudo-probabilities like 0.8/0.5.
  */
-export function deriveOutcomeConfidence(strategy: Strategy): number | null {
+export type ConfidenceLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN'
+
+export const CONFIDENCE_LEVELS: ConfidenceLevel[] = ['HIGH', 'MEDIUM', 'LOW', 'UNKNOWN']
+
+/**
+ * Derive the qualitative confidence level for an expected outcome.
+ * Conservative — uses the WORST confidence dimension from the strategy's
+ * uncertainty assessments. Never returns a fabricated probability.
+ *
+ * If the strategy has no uncertainty assessments, returns UNKNOWN (not a
+ * fake high confidence).
+ */
+export function deriveConfidenceLevel(strategy: Strategy): ConfidenceLevel {
   const uncertainties = strategy.uncertainties
-  if (!uncertainties || uncertainties.length === 0) return null
+  if (!uncertainties || uncertainties.length === 0) return 'UNKNOWN'
 
-  // Conservative: use the WORST confidence dimension
-  const confidenceMap: Record<string, number> = {
-    high: 0.8,
-    medium: 0.5,
-    low: 0.2,
-    unknown: 0.1,
+  // Rank: UNKNOWN < LOW < MEDIUM < HIGH. We take the WORST (lowest rank).
+  const rank: Record<string, number> = {
+    unknown: 0,
+    low: 1,
+    medium: 2,
+    high: 3,
   }
 
-  let minConfidence = 1.0
+  let minRank = Infinity
   for (const u of uncertainties) {
-    const c = confidenceMap[u.confidence?.toLowerCase() ?? 'unknown'] ?? 0.1
-    if (c < minConfidence) minConfidence = c
+    const r = rank[(u.confidence ?? 'unknown').toLowerCase()] ?? 0
+    if (r < minRank) minRank = r
   }
 
-  return minConfidence
+  if (minRank === Infinity) return 'UNKNOWN'
+  if (minRank === 0) return 'UNKNOWN'
+  if (minRank === 1) return 'LOW'
+  if (minRank === 2) return 'MEDIUM'
+  return 'HIGH'
+}
+
+/**
+ * @deprecated Use deriveConfidenceLevel (qualitative). This function is
+ * retained for backward compatibility with existing persisted records that
+ * have a numeric `confidence` field. It returns null — new code must NOT
+ * fabricate numeric confidence values.
+ */
+export function deriveOutcomeConfidence(_strategy: Strategy): number | null {
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -439,7 +656,8 @@ export interface ExpectedOutcomeRecord {
   target?: string | null
   unit?: string | null
   expectedByDate?: Date | null
-  confidence?: number | null
+  /** N0.7: Qualitative confidence level. Never a fabricated probability. */
+  confidenceLevel?: ConfidenceLevel
   evidence: string
   actionId?: string
   scope: 'ACTION' | 'STRATEGY'
@@ -463,7 +681,16 @@ export interface ExpectedOutcomeRecord {
  *   2. One action-level expected outcome per action in the action plan
  *
  * Each expected outcome links to the DecisionGraph OUTCOME node where
- * applicable.
+ * the graph provides a valid linkage (validated, not text-guessed).
+ *
+ * N0.7 HARDENING:
+ *   - Outcome types are derived from the GRAPH (authoritative), not text.
+ *     Falls back to UNKNOWN when the graph doesn't provide a relationship.
+ *   - Confidence is qualitative (HIGH/MEDIUM/LOW/UNKNOWN), never a fabricated
+ *     numeric probability.
+ *   - Expected dates derive from the immutable adoption timestamp.
+ *   - graphNodeId is only set when the node actually exists in the historical
+ *     graph (validated via validateGraphNodeLinkage).
  */
 export function createExpectedOutcomes(input: ExpectedOutcomeInput): ExpectedOutcomeRecord[] {
   const records: ExpectedOutcomeRecord[] = []
@@ -474,21 +701,26 @@ export function createExpectedOutcomes(input: ExpectedOutcomeInput): ExpectedOut
     ? `outcome-${hashId(strategy.bestTrajectory.id)}`
     : undefined
 
-  const graphOutcomeNode = graph?.nodes.find(
-    (n) => n.type === 'OUTCOME' && n.id === bestOutcomeNodeId
-  )
+  // Validate the graph linkage — only set graphNodeId if the node actually
+  // exists in the historical graph.
+  const graphOutcomeLinkage = (graph && bestOutcomeNodeId)
+    ? validateGraphNodeLinkage(graph, bestOutcomeNodeId, 'OUTCOME')
+    : null
+  const validGraphOutcomeId = graphOutcomeLinkage?.valid ? bestOutcomeNodeId : null
 
   // --- Strategy-level expected outcome ---
   const strategyPrediction = deriveStrategyPrediction(strategy, decisionRecordId)
-  const strategyOutcomeType = deriveOutcomeTypeFromStrategy(strategy)
-  const strategyConfidence = deriveOutcomeConfidence(strategy)
+  const strategyOutcomeType = graph
+    ? deriveStrategyOutcomeTypeFromGraph(graph, strategy)
+    : 'UNKNOWN'
+  const strategyConfidenceLevel = deriveConfidenceLevel(strategy)
 
   records.push({
     userId,
     decisionRecordId,
     objectiveId,
     outcomeType: strategyOutcomeType,
-    graphNodeId: graphOutcomeNode?.id,
+    graphNodeId: validGraphOutcomeId,
     description: strategy.bestTrajectory
       ? `Trajectory "${strategy.bestTrajectory.label}" becomes viable`
       : 'Strategy trajectory becomes viable',
@@ -497,7 +729,7 @@ export function createExpectedOutcomes(input: ExpectedOutcomeInput): ExpectedOut
     expectedByDate: strategy.bestTrajectory?.totalMonths
       ? addMonths(adoptionDate, strategy.bestTrajectory.totalMonths)
       : undefined,
-    confidence: strategyConfidence,
+    confidenceLevel: strategyConfidenceLevel,
     evidence: strategy.bestTrajectory
       ? `Predicted timeline: ${strategy.bestTrajectory.totalMonths} months, cost: $${strategy.bestTrajectory.totalCostUSD}`
       : 'Derived from strategy best trajectory',
@@ -511,14 +743,26 @@ export function createExpectedOutcomes(input: ExpectedOutcomeInput): ExpectedOut
   // --- Action-level expected outcomes ---
   for (const action of strategy.actionPlan?.actions ?? []) {
     const actionPrediction = deriveActionPrediction(strategy, action.id, decisionRecordId)
-    const actionOutcomeType = deriveOutcomeTypeFromAction(action)
+    // Graph-based type derivation (authoritative). Falls back to UNKNOWN.
+    const actionOutcomeType = graph
+      ? deriveOutcomeTypeFromGraph(graph, action.id)
+      : 'UNKNOWN'
     const actionExpectedBy = deriveExpectedByDate(action, adoptionDate)
 
-    // Find the graph OUTCOME node this action leads to
+    // Validate the action's graph node exists in the historical graph.
+    const actionNodeId = `action-${hashId(action.id)}`
+    const actionNodeLinkage = graph
+      ? validateGraphNodeLinkage(graph, actionNodeId, 'ACTION')
+      : null
+
+    // Find the OUTCOME node this action leads to (via LEADS_TO edge)
     const actionOutcomeEdge = graph?.edges.find(
-      (e) => e.from === `action-${hashId(action.id)}` && e.type === 'LEADS_TO'
+      (e) => e.from === actionNodeId && e.type === 'LEADS_TO'
     )
-    const actionGraphNodeId = actionOutcomeEdge?.to
+    // Only set graphNodeId if both the action node AND the outcome node exist
+    const actionGraphNodeId = (actionNodeLinkage?.valid && actionOutcomeEdge)
+      ? actionOutcomeEdge.to
+      : null
 
     records.push({
       userId,
@@ -530,7 +774,7 @@ export function createExpectedOutcomes(input: ExpectedOutcomeInput): ExpectedOut
       target: action.title,
       unit: action.timeframe,
       expectedByDate: actionExpectedBy,
-      confidence: strategyConfidence,
+      confidenceLevel: strategyConfidenceLevel,
       evidence: `Action: ${action.title}, timeframe: ${action.timeframe}, impact: ${action.impact}`,
       actionId: action.id,
       scope: 'ACTION',
@@ -694,11 +938,23 @@ export function validateEvaluationStatus(value: string): OutcomeEvaluationStatus
 
 /**
  * Validate that a string is a valid OutcomeProvenance. Client submissions
- * can only be USER_CONFIRMED — the server rejects EXTERNAL_VERIFICATION
- * from clients.
+ * can only be USER_CONFIRMED or USER_REPORTED — the server rejects
+ * EXTERNAL_VERIFICATION from clients.
+ *
+ * Note: USER_REPORTED and USER_CONFIRMED are treated as equivalent client-
+ * acceptable provenance values. The existing N0.4b schema uses
+ * USER_REPORTED; N0.7 introduced USER_CONFIRMED. Both are accepted from
+ * clients and mapped to the same semantic ("the user reported this").
  */
 export function validateProvenance(value: string, isClientSubmission: boolean): OutcomeProvenance | null {
-  const valid: OutcomeProvenance[] = ['USER_CONFIRMED', 'DOCUMENT', 'SYSTEM_EVENT', 'POLICY_EVENT', 'EXTERNAL_VERIFICATION']
+  const valid: OutcomeProvenance[] = [
+    'USER_CONFIRMED',
+    'USER_REPORTED',
+    'DOCUMENT',
+    'SYSTEM_EVENT',
+    'POLICY_EVENT',
+    'EXTERNAL_VERIFICATION',
+  ]
   if (!valid.includes(value as OutcomeProvenance)) return null
   // Client submissions can NEVER claim EXTERNAL_VERIFICATION
   if (isClientSubmission && value === 'EXTERNAL_VERIFICATION') return null

@@ -358,8 +358,16 @@ export async function POST(req: Request) {
       // outcomes are created when UserActions are synced via /api/actions).
       // These are IMMUTABLE predictions frozen at adoption time. They are
       // append-only — never overwritten.
+      //
+      // The strategy passed here is body.strategy — this is the strategy the
+      // user is adopting RIGHT NOW. It is NOT a client-supplied historical
+      // strategy; it is the strategy computed by the engine + persisted in the
+      // DecisionRecord we just created. The record.createdAt is the immutable
+      // adoption timestamp.
       let expectedOutcomeCount = 0
       try {
+        // Reconstruct the historical graph from the strategy being adopted.
+        // This is the SAME strategy we just persisted — it is authoritative.
         const expectedRecords = createExpectedOutcomes({
           strategy: body.strategy,
           decisionRecordId: record.id,
@@ -380,7 +388,8 @@ export async function POST(req: Request) {
                 objectiveId: rec.objectiveId,
                 outcomeType: rec.outcomeType,
                 graphNodeId: rec.graphNodeId ?? null,
-                confidence: rec.confidence ?? null,
+                // N0.7: qualitative confidence, never a fabricated probability
+                confidenceLevel: rec.confidenceLevel ?? null,
                 evaluationStatus: 'UNKNOWN',
                 // Predicted fields (immutable)
                 predictedTrajectoryViable: rec.predictedTrajectoryViable ?? null,

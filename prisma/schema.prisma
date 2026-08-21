@@ -586,17 +586,28 @@ model ActionOutcome {
   /// strategy that predicted the action's effect.
   decisionRecordId String?
   /// N0.7: Controlled vocabulary outcome type. Deterministic — derived from
-  /// the action's characteristics at adoption time.
-  outcomeType     String   @default("OTHER")
+  /// the historical DecisionGraph at adoption time (authoritative), not text.
+  /// Falls back to UNKNOWN when the graph doesn't provide a relationship.
+  outcomeType     String   @default("UNKNOWN")
   /// N0.7: The DecisionGraph OUTCOME node this expected outcome corresponds to.
-  /// Links the outcome tracking to the explanation graph.
+  /// Links the outcome tracking to the explanation graph. Only set when the
+  /// node actually exists in the historical graph (validated).
   graphNodeId     String?
   /// N0.7: When the outcome was expected to occur (target date). Derived from
-  /// the action's timeframe + adoption date.
+  /// the action's timeframe + the IMMUTABLE historical adoption date.
   expectedByDate  DateTime?
-  /// N0.7: Wayfinder's confidence in the prediction (0.0-1.0). Conservative —
-  /// derived from the strategy's uncertainty assessments, never fabricated.
+  /// N0.7: @deprecated Numeric confidence. Retained for backward compat with
+  /// existing records, but new code must NOT fabricate numeric probabilities.
+  /// Use `confidenceLevel` (qualitative) instead.
   confidence      Float?
+  /// N0.7: Qualitative confidence level (HIGH/MEDIUM/LOW/UNKNOWN). Never a
+  /// fabricated probability. Derived from the strategy's uncertainty
+  /// assessments (worst dimension, conservative).
+  confidenceLevel String?
+  /// N0.7: For OBSERVED outcomes — the exact expected outcome event this
+  /// observation evaluates. Explicit causal identity. Nullable for backward
+  /// compat with pre-N0.7-hardening records.
+  expectedOutcomeId String?
   /// N0.7: Deterministic evaluation status, computed from predicted vs actual.
   /// ACHIEVED | PARTIALLY_ACHIEVED | NOT_ACHIEVED | UNKNOWN
   evaluationStatus String  @default("UNKNOWN")
@@ -634,6 +645,7 @@ model ActionOutcome {
   @@index([provenance])
   @@index([outcomeType])
   @@index([evaluationStatus])
+  @@index([expectedOutcomeId])
 }
 
 /// The observed outcome of a strategy as a whole. A strategy can be followed
@@ -661,13 +673,21 @@ model StrategyOutcome {
   /// The objective this strategy was for.
   objectiveId     String?
   /// N0.7: Controlled vocabulary outcome type. Deterministic — derived from
-  /// the strategy's best trajectory at adoption time.
-  outcomeType     String   @default("ROUTE_UNLOCKED")
+  /// the historical DecisionGraph (authoritative), not text. Falls back to
+  /// UNKNOWN when the graph doesn't provide a relationship.
+  outcomeType     String   @default("UNKNOWN")
   /// N0.7: The DecisionGraph OUTCOME node this expected outcome corresponds to.
+  /// Only set when the node actually exists in the historical graph (validated).
   graphNodeId     String?
-  /// N0.7: Wayfinder's confidence in the prediction (0.0-1.0). Conservative —
-  /// derived from the strategy's uncertainty assessments, never fabricated.
+  /// N0.7: @deprecated Numeric confidence. Retained for backward compat.
+  /// New code uses `confidenceLevel` (qualitative).
   confidence      Float?
+  /// N0.7: Qualitative confidence level (HIGH/MEDIUM/LOW/UNKNOWN). Never a
+  /// fabricated probability.
+  confidenceLevel String?
+  /// N0.7: For OBSERVED outcomes — the exact expected outcome event this
+  /// observation evaluates. Explicit causal identity.
+  expectedOutcomeId String?
   /// N0.7: Deterministic evaluation status, computed from predicted vs actual.
   /// ACHIEVED | PARTIALLY_ACHIEVED | NOT_ACHIEVED | UNKNOWN
   evaluationStatus String  @default("UNKNOWN")
@@ -705,4 +725,5 @@ model StrategyOutcome {
   @@index([provenance])
   @@index([outcomeType])
   @@index([evaluationStatus])
+  @@index([expectedOutcomeId])
 }

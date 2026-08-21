@@ -25,8 +25,13 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { db } from '@/lib/db'
 import { evaluateActionOutcome } from '@/lib/strategy/evaluation'
-import { evaluateActionOutcomeN07, validateOutcomeType } from '@/lib/strategy/outcome-intelligence'
+import {
+  evaluateActionOutcomeN07,
+  validateOutcomeType,
+  validateProvenance,
+} from '@/lib/strategy/outcome-intelligence'
 import { deriveActionPrediction } from '@/lib/strategy/prediction'
+import { buildDecisionGraph } from '@/lib/strategy/decision-graph'
 import type { Strategy } from '@/lib/strategy/types'
 import { createHash } from 'crypto'
 
@@ -41,8 +46,12 @@ interface OutcomeBody {
   actualBlockerResolved?: boolean
   notes?: string
   /** N0.7: Optional outcome type override. If not provided, the existing
-   *  expected outcome's type is used (or OTHER if no expected outcome exists). */
+   *  expected outcome's type is used (or UNKNOWN if no expected outcome exists). */
   outcomeType?: string
+  /** N0.7: Client-provided provenance is REJECTED. The server always sets
+   *  provenance to USER_REPORTED for client submissions. This field is
+   *  documented here so callers know it exists, but it is ignored. */
+  provenance?: string
   /** Client-generated event ID for idempotency. Retries with the same
    *  eventId return the existing event. Different eventIds create new events. */
   eventId?: string
@@ -79,6 +88,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       predictedBlockerResolved: null as boolean | null,
       decisionRecordId: decisionRecordId,
     }
+    let historicalStrategy: Strategy | null = null
 
     if (decisionRecordId) {
       // 3. Verify the DecisionRecord belongs to this user (ownership)
@@ -87,8 +97,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       })
       if (record?.strategySnapshot) {
         // 4. Derive predictions SERVER-SIDE from the historical strategy
-        const strategy = record.strategySnapshot as unknown as Strategy
-        prediction = deriveActionPrediction(strategy, userAction.actionId, decisionRecordId)
+        historicalStrategy = record.strategySnapshot as unknown as Strategy
+        prediction = deriveActionPrediction(historicalStrategy, userAction.actionId, decisionRecordId)
       }
     }
 
@@ -118,8 +128,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
     // 7. Create a NEW immutable outcome event.
     //    Provenance is ALWAYS USER_REPORTED for client submissions —
-    //    the client cannot claim EXTERNALLY_VERIFIED.
+    //    the client cannot claim EXTERNALLY_VERIFIED. Any client-provided
+    //    `provenance` field is ignored.
     //    N0.7: Compute deterministic evaluationStatus from predicted vs actual.
+
+    // Resolve the existing expected outcome (SYSTEM_DERIVED) — this is the
+    // explicit causal identity the observed outcome evaluates.
+    const existingExpected = await db.actionOutcome.findFirst({
+      where: { userActionId, provenance: 'SYSTEM_DERIVED' },
+      orderBy: { createdAt: 'desc' },
+    })
+
     const n07Evaluation = evaluateActionOutcomeN07({
       predictedEffect: prediction.predictedEffect,
       actualEffect: body.actualEffect ?? null,
@@ -129,17 +148,21 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       actualCostUSD: body.actualCostUSD ?? null,
       predictedBlockerResolved: prediction.predictedBlockerResolved,
       actualBlockerResolved: body.actualBlockerResolved ?? null,
-      expectedOutcomeId: userActionId,
+      expectedOutcomeId: existingExpected?.id ?? userActionId,
       provenance: 'USER_REPORTED',
     })
 
-    // Resolve outcomeType: client override (validated) or existing expected outcome's type
+    // Resolve outcomeType: client override (validated) or existing expected outcome's type.
+    // Falls back to UNKNOWN (not a text guess).
     const validatedType = body.outcomeType ? validateOutcomeType(body.outcomeType) : null
-    const existingExpected = await db.actionOutcome.findFirst({
-      where: { userActionId, provenance: 'SYSTEM_DERIVED' },
-      orderBy: { createdAt: 'desc' },
-    })
-    const outcomeType = validatedType ?? (existingExpected?.outcomeType as any) ?? 'OTHER'
+    const outcomeType = validatedType ?? (existingExpected?.outcomeType as any) ?? 'UNKNOWN'
+
+    // N0.7: Client cannot claim EXTERNALLY_VERIFIED. Any client-provided
+    // provenance is rejected/downgraded to USER_REPORTED.
+    const validatedProvenance = body.provenance
+      ? validateProvenance(body.provenance, true)
+      : null
+    const finalProvenance = validatedProvenance ?? 'USER_REPORTED'
 
     const outcome = await db.actionOutcome.create({
       data: {
@@ -147,10 +170,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         userActionId,
         decisionRecordId: prediction.decisionRecordId,
         outcomeType,
-        // N0.7: carry forward graphNodeId + expectedByDate + confidence from expected outcome
+        // N0.7: carry forward graphNodeId + expectedByDate + confidenceLevel
+        // from the expected outcome (validated against the historical graph).
         graphNodeId: existingExpected?.graphNodeId ?? null,
         expectedByDate: existingExpected?.expectedByDate ?? null,
-        confidence: existingExpected?.confidence ?? null,
+        confidenceLevel: existingExpected?.confidenceLevel ?? null,
+        // N0.7: explicit causal identity — the observed outcome references
+        // the exact expected outcome event it evaluates.
+        expectedOutcomeId: existingExpected?.id ?? null,
         evaluationStatus: n07Evaluation.status,
         // Predictions — server-derived, immutable
         predictedEffect: prediction.predictedEffect,
@@ -164,7 +191,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         actualBlockerResolved: body.actualBlockerResolved ?? null,
         // Status + provenance — server-controlled
         status: 'USER_REPORTED',
-        provenance: 'USER_REPORTED',
+        provenance: finalProvenance,
         notes: body.notes ?? null,
         idempotencyKey,
       },
