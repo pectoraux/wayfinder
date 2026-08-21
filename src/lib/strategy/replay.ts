@@ -48,6 +48,7 @@
 import { db } from '@/lib/db'
 import { buildCanonicalPlanningContext, STRATEGY_ENGINE_VERSION } from '@/lib/strategy/planning-context'
 import { buildStrategy } from '@/lib/strategy'
+import { buildDecisionGraph, compareGraphs, type GraphComparisonResult, type DecisionGraph } from '@/lib/strategy/decision-graph'
 import type { Strategy, StrategyProvenance, Trajectory, BlockerAnalysis, ActionPlan, ProfileAnalysis, IntentFrontier, PreferenceQuestion, UncertaintyAssessment, UnlockOption } from '@/lib/strategy/types'
 import type { MobilityState, Intent } from '@/lib/domain/types'
 
@@ -108,6 +109,8 @@ export interface ReplayResult {
   differences: StrategyDifference[]
   /** The structured comparison result (when replay succeeded). */
   comparison?: StrategyComparison
+  /** N0.6: Graph comparison result (when replay succeeded and both graphs exist). */
+  graphComparison?: GraphComparisonResult
 }
 
 // ---------------------------------------------------------------------------
@@ -776,32 +779,55 @@ export async function replayStrategy(
   // 6. Structured comparison across all deterministic dimensions
   const comparison = compareStrategyReplay(storedStrategy, replayedStrategy)
 
+  // 6b. N0.6: Graph comparison — compare the stored DecisionGraph against
+  //     the replayed DecisionGraph. This makes the graph part of the
+  //     historical integrity contract.
+  let graphComparison: GraphComparisonResult | undefined
+  const storedGraph = storedStrategy.decisionGraph
+  const replayedGraph = replayedStrategy.decisionGraph
+  if (storedGraph && replayedGraph) {
+    graphComparison = compareGraphs(storedGraph, replayedGraph)
+  } else if (storedGraph || replayedGraph) {
+    // One exists but not the other — graph mismatch
+    graphComparison = {
+      status: 'GRAPH_MISMATCH',
+      storedHash: storedGraph?.graphHash ?? 'none',
+      replayedHash: replayedGraph?.graphHash ?? 'none',
+      differences: ['graph exists in one strategy but not the other'],
+    }
+  }
+
   // 7. Determine status — distinguish ENGINE_CHANGED from OUTPUT_MISMATCH
   const engineChanged = comparison.differences.some((d) => d.dimension === 'strategyEngineVersion')
   const otherDifferences = comparison.differences.filter((d) => d.dimension !== 'strategyEngineVersion')
 
+  // N0.6: graph mismatch is also a difference
+  const graphMismatch = graphComparison?.status === 'GRAPH_MISMATCH'
+
   let status: ReplayStatus
   let explanation: string
 
-  if (comparison.exact) {
+  if (comparison.exact && !graphMismatch) {
     status = 'EXACT_MATCH'
-    explanation = 'The replayed strategy matches the stored record exactly — same engine, same policy hash, same deterministic output across all dimensions.'
-  } else if (engineChanged && otherDifferences.length === 0) {
-    // ONLY the engine version differs — the output happens to be identical
-    // despite the engine change. We still report ENGINE_CHANGED because the
-    // engine version is part of the provenance contract.
+    explanation = 'The replayed strategy matches the stored record exactly — same engine, same policy hash, same deterministic output across all dimensions, and the decision graph matches.'
+  } else if (engineChanged && otherDifferences.length === 0 && !graphMismatch) {
     status = 'ENGINE_CHANGED'
     explanation = `The strategy engine version changed from ${provenance.strategyEngineVersion} to ${replayedStrategy.strategyEngineVersion}, but the deterministic output is still identical.`
-  } else if (engineChanged && otherDifferences.length > 0) {
-    // Both the engine version AND the output differ. ENGINE_CHANGED takes
-    // precedence because the engine change is the root cause.
+  } else if (engineChanged && (otherDifferences.length > 0 || graphMismatch)) {
     status = 'ENGINE_CHANGED'
-    explanation = `The strategy engine version changed (${provenance.strategyEngineVersion} → ${replayedStrategy.strategyEngineVersion}) AND ${otherDifferences.length} dimension(s) differ: ${otherDifferences.map((d) => d.dimension).join(', ')}.`
-  } else {
-    // Engine version matches, but the output differs. This is a policy drift
-    // or route change — NOT an engine change.
+    const parts: string[] = []
+    if (otherDifferences.length > 0) parts.push(`${otherDifferences.length} dimension(s) differ: ${otherDifferences.map((d) => d.dimension).join(', ')}`)
+    if (graphMismatch) parts.push('decision graph mismatch')
+    explanation = `The strategy engine version changed (${provenance.strategyEngineVersion} → ${replayedStrategy.strategyEngineVersion}) AND ${parts.join(' and ')}.`
+  } else if (graphMismatch && comparison.exact) {
+    // Strategy output matches but graph differs — this is a graph-specific regression
     status = 'OUTPUT_MISMATCH'
-    explanation = `The replayed strategy's deterministic output differs from the stored record across ${comparison.differences.length} dimension(s): ${comparison.differences.map((d) => d.dimension).join(', ')}. The engine version matches (${provenance.strategyEngineVersion}); the difference is likely a policy or route change.`
+    explanation = `The replayed strategy's deterministic output matches, but the decision graph differs: ${graphComparison!.differences.join('; ')}.`
+  } else {
+    status = 'OUTPUT_MISMATCH'
+    const parts: string[] = [`${comparison.differences.length} dimension(s) differ: ${comparison.differences.map((d) => d.dimension).join(', ')}`]
+    if (graphMismatch) parts.push(`decision graph mismatch: ${graphComparison!.differences.join('; ')}`)
+    explanation = `The replayed strategy differs from the stored record: ${parts.join(' and ')}.`
   }
 
   return {
@@ -812,5 +838,6 @@ export async function replayStrategy(
     explanation,
     differences: comparison.differences,
     comparison,
+    graphComparison,
   }
 }

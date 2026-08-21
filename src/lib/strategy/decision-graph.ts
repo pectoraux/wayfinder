@@ -127,8 +127,12 @@ export interface ConfidenceByDimension {
 
 export interface StrategyExplanation {
   summary: string
-  /** Causal chain DERIVED from graph traversal (not from Strategy fields directly). */
+  /** Primary causal path DERIVED from graph traversal. This is the PRIMARY
+   *  explanation path (first need → first blocker → first capability → first
+   *  action → first outcome). The FULL explanation is the DecisionGraph itself. */
   causalChain: ExplanationStep[]
+  /** Explicit label that this is the primary path, not the complete graph. */
+  causalChainScope: 'PRIMARY_PATH'
   assumptions: string[]
   rejectedAlternatives: string[]
   /** Separated confidence dimensions (not a single scalar). */
@@ -154,15 +158,28 @@ export interface ExplanationStep {
 // ---------------------------------------------------------------------------
 
 function computeGraphHash(nodes: DecisionNode[], edges: DecisionEdge[]): string {
-  const payload = JSON.stringify({
+  const payload = canonicalizeGraphPayload(nodes, edges)
+  return createHash('sha256').update(payload).digest('hex')
+}
+
+/** Canonicalize the graph payload (nodes + edges) for deterministic comparison.
+ *  Excludes generatedAt, graphHash, legacyReconstructed. */
+function canonicalizeGraphPayload(nodes: DecisionNode[], edges: DecisionEdge[]): string {
+  return JSON.stringify({
     nodes: nodes
-      .map((n) => ({ id: n.id, type: n.type, label: n.label, description: n.description, evidence: n.evidence, provenance: n.provenance }))
+      .map((n) => ({
+        id: n.id,
+        type: n.type,
+        label: n.label,
+        description: n.description,
+        evidence: n.evidence,
+        provenance: n.provenance,
+      }))
       .sort((a, b) => a.id.localeCompare(b.id)),
     edges: edges
       .map((e) => ({ from: e.from, to: e.to, type: e.type, label: e.label }))
       .sort((a, b) => `${a.from}-${a.type}-${a.to}`.localeCompare(`${b.from}-${b.type}-${b.to}`)),
   })
-  return createHash('sha256').update(payload).digest('hex').slice(0, 16)
 }
 
 // ---------------------------------------------------------------------------
@@ -182,25 +199,40 @@ export interface GraphComparisonResult {
 }
 
 /**
- * Compare a stored graph against a replayed graph using canonical hashes.
- * Two graphs are EXACT_MATCH iff their graphHash values are identical.
+ * Compare a stored graph against a replayed graph using INDEPENDENT canonical
+ * comparison — does NOT trust the supplied graphHash field.
+ *
+ * The comparator canonicalizes both graphs' nodes+edges and derives the
+ * status from the canonical representation. This means even if graphHash
+ * is stale or tampered, the comparison will detect the difference.
  */
 export function compareGraphs(stored: DecisionGraph, replayed: DecisionGraph): GraphComparisonResult {
   const differences: string[] = []
 
-  if (stored.graphHash !== replayed.graphHash) {
-    differences.push(`graphHash: stored=${stored.graphHash} replayed=${replayed.graphHash}`)
+  // Independently canonicalize both graphs
+  const storedCanonical = canonicalizeGraphPayload(stored.nodes, stored.edges)
+  const replayedCanonical = canonicalizeGraphPayload(replayed.nodes, replayed.edges)
+
+  // Derive hashes from the canonical payloads (not from the stored graphHash field)
+  const storedDerivedHash = createHash('sha256').update(storedCanonical).digest('hex')
+  const replayedDerivedHash = createHash('sha256').update(replayedCanonical).digest('hex')
+
+  // Check graphSchemaVersion
+  if (stored.graphSchemaVersion !== replayed.graphSchemaVersion) {
+    differences.push(`graphSchemaVersion: stored=${stored.graphSchemaVersion} replayed=${replayed.graphSchemaVersion}`)
   }
 
+  // Node count
   if (stored.nodes.length !== replayed.nodes.length) {
     differences.push(`node count: stored=${stored.nodes.length} replayed=${replayed.nodes.length}`)
   }
 
+  // Edge count
   if (stored.edges.length !== replayed.edges.length) {
     differences.push(`edge count: stored=${stored.edges.length} replayed=${replayed.edges.length}`)
   }
 
-  // Check for node content differences
+  // Detailed node comparison
   const storedNodes = new Map(stored.nodes.map((n) => [n.id, n]))
   for (const replayedNode of replayed.nodes) {
     const storedNode = storedNodes.get(replayedNode.id)
@@ -211,15 +243,51 @@ export function compareGraphs(stored: DecisionGraph, replayed: DecisionGraph): G
       if (storedNode.type !== replayedNode.type) {
         differences.push(`node ${replayedNode.id} type: ${storedNode.type} → ${replayedNode.type}`)
       }
+      if (storedNode.description !== replayedNode.description) {
+        differences.push(`node ${replayedNode.id} description changed`)
+      }
+      if (storedNode.evidence !== replayedNode.evidence) {
+        differences.push(`node ${replayedNode.id} evidence changed`)
+      }
+      if (JSON.stringify(storedNode.provenance) !== JSON.stringify(replayedNode.provenance)) {
+        differences.push(`node ${replayedNode.id} provenance changed`)
+      }
     } else {
       differences.push(`node ${replayedNode.id} missing in stored graph`)
     }
   }
 
+  // Check for nodes in stored but not in replayed
+  const replayedNodeIds = new Set(replayed.nodes.map((n) => n.id))
+  for (const storedNode of stored.nodes) {
+    if (!replayedNodeIds.has(storedNode.id)) {
+      differences.push(`node ${storedNode.id} missing in replayed graph`)
+    }
+  }
+
+  // Detailed edge comparison
+  const storedEdgeKeys = new Set(stored.edges.map((e) => `${e.from}-${e.type}-${e.to}-${e.label ?? ''}`))
+  const replayedEdgeKeys = new Set(replayed.edges.map((e) => `${e.from}-${e.type}-${e.to}-${e.label ?? ''}`))
+
+  for (const key of replayedEdgeKeys) {
+    if (!storedEdgeKeys.has(key)) {
+      differences.push(`edge added in replayed: ${key}`)
+    }
+  }
+  for (const key of storedEdgeKeys) {
+    if (!replayedEdgeKeys.has(key)) {
+      differences.push(`edge removed in replayed: ${key}`)
+    }
+  }
+
+  // Status is derived from the INDEPENDENT canonical comparison,
+  // NOT from the stored graphHash field.
+  const canonicalMatch = storedCanonical === replayedCanonical
+
   return {
-    status: stored.graphHash === replayed.graphHash ? 'EXACT_MATCH' : 'GRAPH_MISMATCH',
-    storedHash: stored.graphHash,
-    replayedHash: replayed.graphHash,
+    status: canonicalMatch ? 'EXACT_MATCH' : 'GRAPH_MISMATCH',
+    storedHash: storedDerivedHash,
+    replayedHash: replayedDerivedHash,
     differences,
   }
 }
@@ -293,7 +361,12 @@ export function buildDecisionGraph(strategy: Strategy, legacyReconstructed = fal
     }
   }
 
-  // --- BLOCKER nodes (connected to the CORRECT needs, not needs[0]) ---
+  // --- BLOCKER nodes ---
+  // N0.6 final hardening: blockers are connected to the OBJECTIVE (provable)
+  // and to CAPABILITY nodes via their triggers (actual provenance). We do NOT
+  // invent blocker→need edges because the current domain model does not
+  // contain enough information to determine a true blocker→need relationship.
+  // False edges are worse than missing edges.
   const blockerNodeIds: string[] = []
   for (const blocker of strategy.blockers) {
     const nodeId = `blocker-${hashString(blocker.blockerId)}`
@@ -309,14 +382,12 @@ export function buildDecisionGraph(strategy: Strategy, legacyReconstructed = fal
         references: { blockerId: blocker.blockerId, category: blocker.category },
       },
     })
-    // Blocker BLOCKS the objective
+    // Blocker BLOCKS the objective (this is provable — the blocker prevents
+    // achieving the objective on this trajectory)
     edges.push({ from: nodeId, to: objectiveId, type: 'BLOCKS', label: 'prevents' })
-
-    // FIX #3: Connect blocker to ALL needs that are relevant (not just needs[0])
-    // A blocker blocks ALL inferred needs (since it prevents achieving the objective)
-    for (const needId of needNodeIds) {
-      edges.push({ from: nodeId, to: needId, type: 'BLOCKS', label: 'obstructs' })
-    }
+    // Do NOT connect to needs — the actual blocker→need relationship is not
+    // represented in the current domain model. Using CapabilityTrigger
+    // provenance (blocker→capability) is the correct causal chain.
   }
 
   // --- CAPABILITY nodes ---
@@ -514,6 +585,7 @@ export function generateExplanation(strategy: Strategy, graph: DecisionGraph): S
   return {
     summary,
     causalChain,
+    causalChainScope: 'PRIMARY_PATH',
     assumptions,
     rejectedAlternatives,
     confidence,
