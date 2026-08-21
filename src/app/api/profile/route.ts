@@ -28,8 +28,7 @@
 // Body: { updates: Partial<MobilityState>, currentState?: MobilityState }
 
 import { NextResponse } from 'next/server'
-import { getServerSession } from 'next-auth'
-import { authOptions } from '@/lib/auth'
+import { getAuthenticatedUserId } from '@/lib/mobile-contract/principal'
 import { db } from '@/lib/db'
 import { validateProfileUpdates, applyValidatedUpdates } from '@/lib/domain/profile-validation'
 import { buildCanonicalPlanningContext, STRATEGY_ENGINE_VERSION } from '@/lib/strategy/planning-context'
@@ -77,12 +76,10 @@ interface StrategyImpact {
 }
 
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions)
-  if (!session?.user) {
+  const userId = await getAuthenticatedUserId(req)
+  if (!userId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
-  const userId = (session.user as any).id
-  if (!userId) return NextResponse.json({ error: 'No user id' }, { status: 400 })
 
   try {
     const body = (await req.json()) as ProfileUpdateBody
@@ -362,12 +359,8 @@ export async function POST(req: Request) {
 }
 
 // GET — returns the user's latest mobility state snapshot
-export async function GET() {
-  const session = await getServerSession(authOptions)
-  if (!session?.user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-  const userId = (session.user as any).id
+export async function GET(req: Request) {
+  const userId = await getAuthenticatedUserId(req)
   if (!userId) return NextResponse.json({ state: null })
 
   try {

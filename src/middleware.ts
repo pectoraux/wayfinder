@@ -1,12 +1,20 @@
 // Wayfinder — route protection middleware.
 //
-// Public: /login, /signup, /api/auth/*, /api/waitlist, static assets.
-// Protected (any authenticated user): everything else, including / and /api/*.
+// P4.0: Accepts BOTH authentication mechanisms:
+//   - Web: NextAuth session cookie
+//   - Mobile: Authorization: Bearer <mobile JWT>
+//
+// Both resolve to the same AuthenticatedPrincipal, so downstream
+// authorization logic is shared.
+//
+// Public: /login, /signup, /api/auth/*, /api/waitlist, /api/health,
+//         /api/mobile/contract, static assets.
+// Protected (any authenticated user): everything else.
 // Protected (ADMIN role): /admin and /api/admin/*.
 
 import { NextResponse } from "next/server"
-import { getToken } from "next-auth/jwt"
 import type { NextRequest } from "next/server"
+import { resolveAuthenticatedPrincipal } from "@/lib/mobile-contract/principal"
 
 const PUBLIC_PATHS = [
   "/login",
@@ -31,9 +39,10 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next()
   }
 
-  const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })
+  // P4.0: Resolve principal from EITHER web session OR mobile Bearer token.
+  const principal = await resolveAuthenticatedPrincipal(req)
 
-  if (!token) {
+  if (!principal.authenticated) {
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
@@ -43,7 +52,7 @@ export async function middleware(req: NextRequest) {
   }
 
   if (pathname.startsWith("/admin") || pathname.startsWith("/api/admin")) {
-    if (token.role !== "ADMIN") {
+    if (principal.role !== "ADMIN") {
       if (pathname.startsWith("/api/")) {
         return NextResponse.json({ error: "Forbidden" }, { status: 403 })
       }
