@@ -1,0 +1,12 @@
+# Vercel deploy ignore — exclude large/unnecessary files
+.next
+db
+skills
+tool-results
+download
+tests
+examples
+mini-services
+dev.log
+tsconfig.tsbuildinfo
+bun.lock

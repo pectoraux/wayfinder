@@ -15,6 +15,7 @@ const PUBLIC_PATHS = [
   "/api/waitlist",
   "/api/health",
   "/api/cron",
+  "/api/mobile/contract", // P4.0: public OpenAPI spec for mobile clients
   "/api/policy/events", // public policy event feed + detail
   "/policy/events", // public policy event pages
   "/_next",
