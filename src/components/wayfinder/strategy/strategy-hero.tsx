@@ -302,7 +302,9 @@ export function StrategyHero({
               Why this trajectory
             </p>
             <p className="mt-1.5 text-sm leading-relaxed text-foreground/90">
-              {strategy.explanation || 'No explanation available.'}
+              {typeof strategy.explanation === 'string'
+                ? strategy.explanation
+                : strategy.explanation?.summary || 'No explanation available.'}
             </p>
 
             {/* Confidence indicators */}
