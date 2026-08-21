@@ -48,7 +48,7 @@
 import { db } from '@/lib/db'
 import { buildCanonicalPlanningContext, STRATEGY_ENGINE_VERSION } from '@/lib/strategy/planning-context'
 import { buildStrategy } from '@/lib/strategy'
-import { buildDecisionGraph, compareGraphs, type GraphComparisonResult, type DecisionGraph } from '@/lib/strategy/decision-graph'
+import { buildDecisionGraph, compareGraphs, validateGraphCausalStructure, type GraphComparisonResult, type GraphCausalViolation, type DecisionGraph } from '@/lib/strategy/decision-graph'
 import type { Strategy, StrategyProvenance, Trajectory, BlockerAnalysis, ActionPlan, ProfileAnalysis, IntentFrontier, PreferenceQuestion, UncertaintyAssessment, UnlockOption } from '@/lib/strategy/types'
 import type { MobilityState, Intent } from '@/lib/domain/types'
 
@@ -128,11 +128,16 @@ export interface VerificationChecks {
   outputMatches: boolean
   /** N0.6: Decision Graph comparison result. */
   graphMatches: boolean
+  /** N0.6: Decision Graph causal-structure validation. Fails if the stored
+   *  graph contains invalid causal relationships (e.g., a fabricated
+   *  Need→Blocker edge). A graph cannot appear causally complete merely
+   *  because the relevant nodes exist — the EDGES must be valid. */
+  graphCausallyValid: boolean
 }
 
 export interface VerificationResult {
   recordId: string
-  /** True only if ALL checks pass (including graph comparison). */
+  /** True only if ALL checks pass (including graph comparison + causal validation). */
   valid: boolean
   checks: VerificationChecks
   /** Diagnostic messages for any failed checks. */
@@ -143,6 +148,8 @@ export interface VerificationResult {
   comparison?: StrategyComparison
   /** N0.6: The graph comparison result (if both graphs exist). */
   graphComparison?: GraphComparisonResult
+  /** N0.6: Causal-structure violations found in the stored graph (if any). */
+  graphCausalViolations?: GraphCausalViolation[]
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +480,7 @@ export async function verifyStrategyRecord(
     replaySucceeded: false,
     outputMatches: false,
     graphMatches: false,
+    graphCausallyValid: false,
   }
 
   const record = await resolveOwnedRecord(recordId, userId)
@@ -637,6 +645,38 @@ export async function verifyStrategyRecord(
             checks.graphMatches = true
           }
 
+          // N0.6: Causal-structure validation — fail if the stored (historical)
+          // graph contains invalid causal relationships. A graph cannot appear
+          // causally complete merely because the relevant nodes exist — the
+          // EDGES must be valid. This detects fabricated relationships such as
+          // an invented Need→Blocker edge.
+          let graphCausalViolations: GraphCausalViolation[] | undefined
+          if (storedGraph) {
+            graphCausalViolations = validateGraphCausalStructure(storedGraph)
+            if (graphCausalViolations.length === 0) {
+              checks.graphCausallyValid = true
+            } else {
+              const summaries = graphCausalViolations.map(
+                (v) => `${v.type}: ${v.description}`
+              )
+              errors.push(`graph causal-structure invalid: ${summaries.join('; ')}`)
+            }
+          } else if (replayedGraph) {
+            // No stored graph but replayed one exists — validate the replayed
+            graphCausalViolations = validateGraphCausalStructure(replayedGraph)
+            if (graphCausalViolations.length === 0) {
+              checks.graphCausallyValid = true
+            } else {
+              const summaries = graphCausalViolations.map(
+                (v) => `${v.type}: ${v.description}`
+              )
+              errors.push(`graph causal-structure invalid: ${summaries.join('; ')}`)
+            }
+          } else {
+            // Both lack a graph — causal check passes vacuously
+            checks.graphCausallyValid = true
+          }
+
           return {
             recordId,
             valid: errors.length === 0,
@@ -645,6 +685,7 @@ export async function verifyStrategyRecord(
             provenance,
             comparison,
             graphComparison,
+            graphCausalViolations,
           }
         } catch (err) {
           errors.push(`replay failed: ${err instanceof Error ? err.message : String(err)}`)

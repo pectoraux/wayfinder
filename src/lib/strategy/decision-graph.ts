@@ -125,23 +125,15 @@ export interface ConfidenceByDimension {
   outcome: 'high' | 'medium' | 'low' | 'unknown'
 }
 
-export interface StrategyExplanation {
-  summary: string
-  /** Primary causal path DERIVED from graph traversal. This is the PRIMARY
-   *  explanation path (first need → first blocker → first capability → first
-   *  action → first outcome). The FULL explanation is the DecisionGraph itself. */
-  causalChain: ExplanationStep[]
-  /** Explicit label that this is the primary path, not the complete graph. */
-  causalChainScope: 'PRIMARY_PATH'
-  assumptions: string[]
-  rejectedAlternatives: string[]
-  /** Separated confidence dimensions (not a single scalar). */
-  confidence: ConfidenceByDimension
-  /** Overall confidence (derived from the dimensions, conservative). */
-  overallConfidence: 'high' | 'medium' | 'low' | 'unknown'
-  graph: DecisionGraph
-}
-
+/**
+ * A single step in an explanation path. Every consecutive pair of steps in a
+ * path MUST be connected by an exact graph edge — recorded as `connectingEdge`
+ * + `edgeDirection` so the relationship is explicit and verifiable.
+ *
+ * A missing edge TERMINATES the path. We never reuse an unrelated edge
+ * elsewhere in the graph to keep a path going. False causality is worse than
+ * an incomplete path.
+ */
 export interface ExplanationStep {
   type: DecisionNodeType
   label: string
@@ -149,8 +141,74 @@ export interface ExplanationStep {
   reasoning: string
   /** The graph node ID this step was derived from. */
   nodeId: string
-  /** The graph edge that connects this step to the previous one (if any). */
+  /** The graph edge type that connects this step to the previous one.
+   *  Undefined for the first step (the path root). */
   connectingEdge?: DecisionEdgeType
+  /** Direction of the connecting edge relative to path traversal:
+   *  - 'forward'  : edge.from === prev.nodeId, edge.to === this.nodeId
+   *  - 'reverse'  : edge.from === this.nodeId, edge.to === prev.nodeId
+   *
+   *  This makes the edge semantics EXPLICIT. For example, the BLOCKS edge is
+   *  stored as Blocker→Objective (the blocker blocks the objective), but the
+   *  path traverses it as Objective→Blocker (reverse) so the explanation can
+   *  start at the objective. The edge itself is unchanged — only the
+   *  traversal direction is recorded. */
+  edgeDirection?: 'forward' | 'reverse'
+}
+
+/**
+ * A VERIFIED reasoning branch — a self-contained causal chain where every
+ * consecutive pair of steps has an exact graph edge.
+ *
+ * The explanation is MULTI-BRANCH, not a single linear chain. The two
+ * foundational proven relationships are kept SEPARATE:
+ *   - Objective →(CAUSES)→ Need           (Need branch)
+ *   - Blocker →(BLOCKS)→ Objective        (Blocker-resolution branch)
+ *
+ * We do NOT invent a Need→Blocker edge. The Need branch terminates after the
+ * Need. The Blocker-resolution branch continues:
+ *   Objective ←(BLOCKS)← Blocker ←(ADDRESSES)← Capability →(REQUIRES)→ Action →(LEADS_TO)→ Outcome
+ */
+export interface ExplanationPath {
+  /** Stable identifier for this branch. */
+  id: string
+  /** Human-readable label for this branch. */
+  label: string
+  /** The kind of provenance this branch represents. */
+  kind:
+    | 'NEED_PROVENANCE'
+    | 'BLOCKER_RESOLUTION'
+    | 'ACTION_OUTCOME'
+    | 'ASSUMPTION'
+    | 'TRADEOFF'
+    | 'ALTERNATIVE'
+  /** Ordered steps. Each consecutive pair has a verified graph edge
+   *  (connectingEdge + edgeDirection). The path TERMINATES when no verified
+   *  edge exists — it never reuses an unrelated edge elsewhere in the graph. */
+  steps: ExplanationStep[]
+  /** Why this path terminated (for audit transparency). */
+  terminationReason:
+    | 'COMPLETE'
+    | 'NO_FURTHER_VERIFIED_EDGE'
+    | 'NO_ENTRY_NODE'
+}
+
+export interface StrategyExplanation {
+  summary: string
+  /** VERIFIED reasoning branches. Each path is a self-contained causal chain
+   *  where every consecutive pair has an exact graph edge. The explanation is
+   *  MULTI-BRANCH — Objective→Need and Blocker→Objective are SEPARATE proven
+   *  relationships, not conflated into one linear chain. */
+  paths: ExplanationPath[]
+  /** Explicit scope label clarifying the explanation model. */
+  explanationScope: 'MULTI_BRANCH_VERIFIED'
+  assumptions: string[]
+  rejectedAlternatives: string[]
+  /** Separated confidence dimensions (not a single scalar). */
+  confidence: ConfidenceByDimension
+  /** Overall confidence (derived from the dimensions, conservative). */
+  overallConfidence: 'high' | 'medium' | 'low' | 'unknown'
+  graph: DecisionGraph
 }
 
 // ---------------------------------------------------------------------------
@@ -367,10 +425,10 @@ export function buildDecisionGraph(strategy: Strategy, legacyReconstructed = fal
   // invent blocker→need edges because the current domain model does not
   // contain enough information to determine a true blocker→need relationship.
   // False edges are worse than missing edges.
-  const blockerNodeIds: string[] = []
+  const blockerNodeIds = new Set<string>()
   for (const blocker of strategy.blockers) {
     const nodeId = `blocker-${hashString(blocker.blockerId)}`
-    blockerNodeIds.push(nodeId)
+    blockerNodeIds.add(nodeId)
     nodes.push({
       id: nodeId,
       type: 'BLOCKER',
@@ -388,6 +446,27 @@ export function buildDecisionGraph(strategy: Strategy, legacyReconstructed = fal
     // Do NOT connect to needs — the actual blocker→need relationship is not
     // represented in the current domain model. Using CapabilityTrigger
     // provenance (blocker→capability) is the correct causal chain.
+  }
+
+  // --- OUTCOME node for bestTrajectory (created EARLY so that both action
+  //     LEADS_TO edges and ALTERNATIVE_TO edges can reference it without
+  //     producing orphan edges). ---
+  let bestOutcomeId: string | undefined
+  if (strategy.bestTrajectory) {
+    bestOutcomeId = `outcome-${hashString(strategy.bestTrajectory.id)}`
+    if (!nodes.find((n) => n.id === bestOutcomeId)) {
+      nodes.push({
+        id: bestOutcomeId,
+        type: 'OUTCOME',
+        label: strategy.bestTrajectory.label,
+        description: `Expected outcome: ${strategy.bestTrajectory.destinationStatus}`,
+        evidence: `Trajectory ${strategy.bestTrajectory.id}, ${strategy.bestTrajectory.totalMonths} months, $${strategy.bestTrajectory.totalCostUSD}`,
+        provenance: {
+          source: 'Strategy.bestTrajectory',
+          references: { trajectoryId: strategy.bestTrajectory.id, sourceRouteId: strategy.bestTrajectory.sourceRouteId ?? '' },
+        },
+      })
+    }
   }
 
   // --- CAPABILITY nodes ---
@@ -411,10 +490,17 @@ export function buildDecisionGraph(strategy: Strategy, legacyReconstructed = fal
       },
     })
 
-    // FIX #2: Capability ADDRESSES the blockers it resolves (correct semantics)
+    // FIX #2: Capability ADDRESSES the blockers it resolves (correct semantics).
+    // N0.6: Only create the ADDRESSES edge if the blocker node actually exists
+    // in the graph. A capability trigger may reference a blockerId that was
+    // filtered out of strategy.blockers — in that case, creating an edge to a
+    // non-existent node would produce an orphan edge. Missing edges are better
+    // than orphan edges.
     for (const trigger of cap.triggers) {
       const blockerNodeId = `blocker-${hashString(trigger.blockerId)}`
-      edges.push({ from: nodeId, to: blockerNodeId, type: 'ADDRESSES', label: 'resolves' })
+      if (blockerNodeIds.has(blockerNodeId)) {
+        edges.push({ from: nodeId, to: blockerNodeId, type: 'ADDRESSES', label: 'resolves' })
+      }
     }
 
     // Capability LEADS_TO outcomes (potential unlocks)
@@ -455,10 +541,13 @@ export function buildDecisionGraph(strategy: Strategy, legacyReconstructed = fal
       },
     })
 
-    // Action ADDRESSES the blocker (if it has one)
+    // Action ADDRESSES the blocker (if it has one AND the blocker exists)
     if (action.addressesBlockerId) {
       const blockerNodeId = `blocker-${hashString(action.addressesBlockerId)}`
-      edges.push({ from: nodeId, to: blockerNodeId, type: 'ADDRESSES', label: 'addresses' })
+      // N0.6: Only create the edge if the blocker node exists (no orphan edges)
+      if (blockerNodeIds.has(blockerNodeId)) {
+        edges.push({ from: nodeId, to: blockerNodeId, type: 'ADDRESSES', label: 'addresses' })
+      }
 
       // FIX #2: Find capabilities that also address this blocker and create
       // Capability → REQUIRES → Action edges
@@ -473,29 +562,19 @@ export function buildDecisionGraph(strategy: Strategy, legacyReconstructed = fal
       }
     }
 
-    // Action LEADS_TO the best trajectory (outcome)
-    if (strategy.bestTrajectory) {
-      const outcomeId = `outcome-${hashString(strategy.bestTrajectory.id)}`
-      if (!nodes.find((n) => n.id === outcomeId)) {
-        nodes.push({
-          id: outcomeId,
-          type: 'OUTCOME',
-          label: strategy.bestTrajectory.label,
-          description: `Expected outcome: ${strategy.bestTrajectory.destinationStatus}`,
-          evidence: `Trajectory ${strategy.bestTrajectory.id}, ${strategy.bestTrajectory.totalMonths} months, $${strategy.bestTrajectory.totalCostUSD}`,
-          provenance: {
-            source: 'Strategy.bestTrajectory',
-            references: { trajectoryId: strategy.bestTrajectory.id, sourceRouteId: strategy.bestTrajectory.sourceRouteId ?? '' },
-          },
-        })
-      }
-      edges.push({ from: nodeId, to: outcomeId, type: 'LEADS_TO', label: 'advances' })
+    // Action LEADS_TO the best trajectory (outcome) — the outcome node was
+    // already created above, so this edge is never orphaned.
+    if (bestOutcomeId) {
+      edges.push({ from: nodeId, to: bestOutcomeId, type: 'LEADS_TO', label: 'advances' })
     }
 
-    // Action DEPENDS_ON other actions
+    // Action DEPENDS_ON other actions (only if the dependency exists)
     if (action.dependsOn) {
       for (const depId of action.dependsOn) {
         const depNodeId = `action-${hashString(depId)}`
+        // The dependency action node will be created in a later iteration of
+        // this loop (or was already created). We add the edge unconditionally
+        // because all actions in actionPlan.actions get nodes.
         edges.push({ from: nodeId, to: depNodeId, type: 'DEPENDS_ON', label: 'depends on' })
       }
     }
@@ -551,8 +630,7 @@ export function buildDecisionGraph(strategy: Strategy, legacyReconstructed = fal
         references: { trajectoryId: alt.id },
       },
     })
-    if (strategy.bestTrajectory) {
-      const bestOutcomeId = `outcome-${hashString(strategy.bestTrajectory.id)}`
+    if (bestOutcomeId) {
       edges.push({ from: nodeId, to: bestOutcomeId, type: 'ALTERNATIVE_TO', label: 'alternative to' })
     }
   }
@@ -571,11 +649,29 @@ export function buildDecisionGraph(strategy: Strategy, legacyReconstructed = fal
 }
 
 // ---------------------------------------------------------------------------
-// GRAPH-DERIVED Explanation (traverses nodes+edges, not Strategy fields)
+// GRAPH-DERIVED Explanation (multi-branch verified paths)
+// ---------------------------------------------------------------------------
+//
+// The explanation is modeled as MULTIPLE VERIFIED GRAPH PATHS, not one linear
+// chain. The two foundational proven relationships are kept SEPARATE:
+//
+//   Branch 1 (Need provenance):
+//     OBJECTIVE →(CAUSES)→ NEED
+//     The path TERMINATES after the need. We do NOT invent a Need→Blocker
+//     edge — the domain model does not contain that relationship.
+//
+//   Branch 2 (Blocker resolution):
+//     OBJECTIVE ←(BLOCKS)← BLOCKER ←(ADDRESSES)← CAPABILITY →(REQUIRES)→ ACTION →(LEADS_TO)→ OUTCOME
+//     Each hop follows an EXACT graph edge. A missing edge truncates the path.
+//
+// Every consecutive node pair in every displayed path has the exact
+// corresponding graph edge (recorded as connectingEdge + edgeDirection).
+// A missing edge TERMINATES the path — it never reuses an unrelated edge
+// elsewhere in the graph. False causality is worse than an incomplete path.
 // ---------------------------------------------------------------------------
 
 export function generateExplanation(strategy: Strategy, graph: DecisionGraph): StrategyExplanation {
-  const causalChain = buildGraphDerivedCausalChain(graph)
+  const paths = buildExplanationPaths(graph)
   const assumptions = extractAssumptionsFromGraph(graph)
   const rejectedAlternatives = extractAlternativesFromGraph(graph)
   const confidence = assessConfidenceByDimension(strategy)
@@ -584,8 +680,8 @@ export function generateExplanation(strategy: Strategy, graph: DecisionGraph): S
 
   return {
     summary,
-    causalChain,
-    causalChainScope: 'PRIMARY_PATH',
+    paths,
+    explanationScope: 'MULTI_BRANCH_VERIFIED',
     assumptions,
     rejectedAlternatives,
     confidence,
@@ -595,237 +691,404 @@ export function generateExplanation(strategy: Strategy, graph: DecisionGraph): S
 }
 
 /**
- * Build the causal chain by TRAVERSING the graph. Each consecutive pair
- * (path[i], path[i+1]) MUST have a real graph edge connecting them:
- *   edge.from === path[i].nodeId
- *   edge.to === path[i+1].nodeId
- *   edge.type === path[i+1].connectingEdge
+ * Build VERIFIED explanation paths by traversing the graph. Each path is a
+ * self-contained causal chain. Every consecutive step pair has an exact graph
+ * edge (connectingEdge + edgeDirection). A missing edge TERMINATES the path.
  *
- * If no valid causal edge exists between two nodes, the path STOPS rather
- * than claiming a causal relationship. False causality is worse than
- * an incomplete path.
- *
- * The primary path traverses:
- *   Objective →(CAUSES)→ Need →(LEADS_TO)→ Outcome →(BLOCKS)→ Blocker
- *   →(ADDRESSES)→ Capability →(REQUIRES)→ Action →(LEADS_TO)→ Outcome
- *
- * Note: the graph does NOT have a direct Need→Blocker edge because the
- * domain model does not contain that relationship. The blocker blocks
- * the trajectory/outcome, not the need. The path follows actual edges.
+ * Paths built:
+ *   1. NEED_PROVENANCE:        Objective →(CAUSES)→ Need  [terminates]
+ *   2. BLOCKER_RESOLUTION:     Objective ←(BLOCKS)← Blocker ←(ADDRESSES)←
+ *                              Capability →(REQUIRES)→ Action →(LEADS_TO)→ Outcome
+ *   3. ACTION_OUTCOME (fallback when no blockers): Action →(LEADS_TO)→ Outcome
  */
-function buildGraphDerivedCausalChain(graph: DecisionGraph): ExplanationStep[] {
-  const steps: ExplanationStep[] = []
+function buildExplanationPaths(graph: DecisionGraph): ExplanationPath[] {
+  const paths: ExplanationPath[] = []
   const nodeMap = new Map(graph.nodes.map((n) => [n.id, n]))
 
-  // Helper: find an edge from→to with a specific type
-  function findEdge(fromId: string, toId: string, type: DecisionEdgeType): DecisionEdge | undefined {
-    return graph.edges.find((e) => e.from === fromId && e.to === toId && e.type === type)
-  }
-
-  // Helper: find the first node reachable from fromId via edgeType
-  function findConnectedNode(fromId: string, edgeType: DecisionEdgeType): { node: DecisionNode; edge: DecisionEdge } | null {
-    for (const edge of graph.edges) {
-      if (edge.from === fromId && edge.type === edgeType) {
-        const node = nodeMap.get(edge.to)
-        if (node) return { node, edge }
-      }
-    }
-    // Also check reverse direction (some edges are from→to where the causal
-    // flow is to→from, e.g., Blocker BLOCKS Objective means the blocker
-    // is the cause)
-    for (const edge of graph.edges) {
-      if (edge.to === fromId && edge.type === edgeType) {
-        const node = nodeMap.get(edge.from)
-        if (node) return { node, edge }
-      }
-    }
-    return null
-  }
-
-  // 1. Start at OBJECTIVE
   const objectiveNode = graph.nodes.find((n) => n.type === 'OBJECTIVE')
-  if (!objectiveNode) return steps
+  if (!objectiveNode) return paths
 
-  steps.push({
+  const objectiveStep: ExplanationStep = {
     type: 'OBJECTIVE',
     label: objectiveNode.label,
     description: objectiveNode.description,
     reasoning: objectiveNode.evidence,
     nodeId: objectiveNode.id,
-  })
-
-  // 2. Follow CAUSES edges from Objective to Need
-  const needResult = findConnectedNode(objectiveNode.id, 'CAUSES')
-  if (needResult && needResult.node.type === 'NEED') {
-    steps.push({
-      type: 'NEED',
-      label: needResult.node.label,
-      description: needResult.node.description,
-      reasoning: needResult.node.evidence,
-      nodeId: needResult.node.id,
-      connectingEdge: 'CAUSES',
-    })
-
-    // 3. From Need, there is NO direct edge to Blocker in the current graph.
-    // The need does not have a direct causal edge to any blocker.
-    // Instead, the path continues from the Objective's OUTCOME (best trajectory),
-    // which IS connected to the objective via the action's LEADS_TO edge.
-    // We do NOT fabricate a Need→Blocker edge.
-    // The path simply notes that the need implies an outcome (trajectory),
-    // and then the blocker blocks that outcome.
   }
 
-  // 4. Find BLOCKER nodes — they BLOCK the objective
-  // The edge is: Blocker →(BLOCKS)→ Objective
-  // So we look for edges where to===objectiveId and type===BLOCKS
+  // === BRANCH 1: NEED PROVENANCE ===
+  // Objective →(CAUSES)→ Need  [terminates — no Need→Blocker edge exists]
+  const needEdges = graph.edges.filter(
+    (e) => e.from === objectiveNode.id && e.type === 'CAUSES'
+  )
+  for (const needEdge of needEdges) {
+    const needNode = nodeMap.get(needEdge.to)
+    if (!needNode || needNode.type !== 'NEED') continue
+
+    paths.push({
+      id: `need-${needNode.id}`,
+      label: `Need implied by objective: ${needNode.label}`,
+      kind: 'NEED_PROVENANCE',
+      steps: [
+        objectiveStep,
+        {
+          type: 'NEED',
+          label: needNode.label,
+          description: needNode.description,
+          reasoning: needNode.evidence,
+          nodeId: needNode.id,
+          connectingEdge: 'CAUSES',
+          edgeDirection: 'forward',
+        },
+      ],
+      // The need branch TERMINATES here. We do NOT invent a Need→Blocker edge.
+      terminationReason: 'NO_FURTHER_VERIFIED_EDGE',
+    })
+  }
+
+  // === BRANCH 2: BLOCKER RESOLUTION ===
+  // Objective ←(BLOCKS)← Blocker ←(ADDRESSES)← Capability →(REQUIRES)→ Action →(LEADS_TO)→ Outcome
   const blockerEdges = graph.edges.filter(
     (e) => e.to === objectiveNode.id && e.type === 'BLOCKS'
   )
-  if (blockerEdges.length > 0) {
-    const blockerNode = nodeMap.get(blockerEdges[0].from)
-    if (blockerNode && blockerNode.type === 'BLOCKER') {
-      // Verify the edge actually connects the previous step to this one
-      // The blocker blocks the OBJECTIVE, not the need. But in the primary
-      // path, we can represent this as: the blocker blocks the objective
-      // (which was the last "destination" in the chain).
-      // We use the edge from blocker→objective, but in the path we note
-      // the connectingEdge as BLOCKS and verify the edge exists.
-      const prevStep = steps[steps.length - 1]
-      // Check if there's a direct edge from prevStep to blocker OR blocker to prevStep
-      const directEdge = findEdge(prevStep.nodeId, blockerNode.id, 'BLOCKS') ||
-                         findEdge(blockerNode.id, prevStep.nodeId, 'BLOCKS')
-      if (directEdge) {
-        steps.push({
-          type: 'BLOCKER',
-          label: blockerNode.label,
-          description: blockerNode.description,
-          reasoning: blockerNode.evidence,
-          nodeId: blockerNode.id,
-          connectingEdge: 'BLOCKS',
-        })
-      } else {
-        // No direct edge between previous step and blocker.
-        // The blocker blocks the OBJECTIVE. If the previous step IS the
-        // objective, we can use the BLOCKS edge. If the previous step is
-        // a NEED, there's no edge — we stop the path here.
-        // But we can still add the blocker with no connectingEdge (it's
-        // a separate concern, not a causal hop from the need).
-        // Per the invariant: if no valid causal edge exists, the path
-        // must stop rather than claiming a causal relationship.
-        // So we DON'T add the blocker to the primary path if there's no
-        // edge from the previous step.
-        // Instead, we try a different traversal: go from Objective directly
-        // to Blocker (which has a real BLOCKS edge).
-        const objBlockerEdge = findEdge(blockerNode.id, objectiveNode.id, 'BLOCKS')
-        if (objBlockerEdge) {
-          // Restart the path from the objective to the blocker
-          // (this is valid — the blocker blocks the objective)
-          steps.push({
-            type: 'BLOCKER',
-            label: blockerNode.label,
-            description: blockerNode.description,
-            reasoning: blockerNode.evidence,
-            nodeId: blockerNode.id,
-            connectingEdge: 'BLOCKS',
-          })
-        }
-      }
 
-      // 5. Follow ADDRESSES edges from CAPABILITY to this blocker
-      const capEdges = graph.edges.filter(
-        (e) => e.type === 'ADDRESSES' && e.to === blockerNode.id
-      )
-      for (const capEdge of capEdges) {
-        const capNode = nodeMap.get(capEdge.from)
-        if (capNode && capNode.type === 'CAPABILITY') {
-          // Verify edge connects previous step (blocker) to this capability
-          const connectingEdge = findEdge(capNode.id, blockerNode.id, 'ADDRESSES')
-          if (connectingEdge) {
-            steps.push({
-              type: 'CAPABILITY',
-              label: capNode.label,
-              description: capNode.description,
-              reasoning: capNode.evidence,
-              nodeId: capNode.id,
-              connectingEdge: 'ADDRESSES',
-            })
+  for (const blockerEdge of blockerEdges) {
+    const blockerNode = nodeMap.get(blockerEdge.from)
+    if (!blockerNode || blockerNode.type !== 'BLOCKER') continue
 
-            // 6. Follow REQUIRES edges from CAPABILITY to ACTION
-            const actionEdges = graph.edges.filter(
-              (e) => e.from === capNode.id && e.type === 'REQUIRES'
-            )
-            for (const actionEdge of actionEdges) {
-              const actionNode = nodeMap.get(actionEdge.to)
-              if (actionNode && actionNode.type === 'ACTION') {
-                steps.push({
-                  type: 'ACTION',
-                  label: actionNode.label,
-                  description: actionNode.description,
-                  reasoning: actionNode.evidence,
-                  nodeId: actionNode.id,
-                  connectingEdge: 'REQUIRES',
-                })
-
-                // 7. Follow LEADS_TO edges from ACTION to OUTCOME
-                const outcomeEdges = graph.edges.filter(
-                  (e) => e.from === actionNode.id && e.type === 'LEADS_TO'
-                )
-                for (const outcomeEdge of outcomeEdges) {
-                  const outcomeNode = nodeMap.get(outcomeEdge.to)
-                  if (outcomeNode && outcomeNode.type === 'OUTCOME') {
-                    steps.push({
-                      type: 'OUTCOME',
-                      label: outcomeNode.label,
-                      description: outcomeNode.description,
-                      reasoning: outcomeNode.evidence,
-                      nodeId: outcomeNode.id,
-                      connectingEdge: 'LEADS_TO',
-                    })
-                    break
-                  }
-                }
-                break
-              }
-            }
-            break
-          }
-        }
-      }
+    const blockerStep: ExplanationStep = {
+      type: 'BLOCKER',
+      label: blockerNode.label,
+      description: blockerNode.description,
+      reasoning: blockerNode.evidence,
+      nodeId: blockerNode.id,
+      connectingEdge: 'BLOCKS',
+      edgeDirection: 'reverse', // edge is Blocker→Objective; traversed Objective→Blocker
     }
-  } else {
-    // No blockers — look for ACTION → OUTCOME directly
-    const actionNodes = graph.nodes.filter((n) => n.type === 'ACTION')
-    if (actionNodes.length > 0) {
-      const actionNode = actionNodes[0]
-      steps.push({
-        type: 'ACTION',
-        label: actionNode.label,
-        description: actionNode.description,
-        reasoning: actionNode.evidence,
-        nodeId: actionNode.id,
-      })
 
-      const outcomeEdges = graph.edges.filter(
-        (e) => e.from === actionNode.id && e.type === 'LEADS_TO'
+    // Find capabilities that ADDRESSES this blocker
+    // Edge: Capability →(ADDRESSES)→ Blocker (traversed Blocker→Capability, reverse)
+    const capEdges = graph.edges.filter(
+      (e) => e.type === 'ADDRESSES' && e.to === blockerNode.id
+    )
+
+    if (capEdges.length === 0) {
+      // Blocker has no resolving capability — path terminates at the blocker
+      paths.push({
+        id: `blocker-${blockerNode.id}`,
+        label: `Blocker: ${blockerNode.label}`,
+        kind: 'BLOCKER_RESOLUTION',
+        steps: [objectiveStep, blockerStep],
+        terminationReason: 'NO_FURTHER_VERIFIED_EDGE',
+      })
+      continue
+    }
+
+    for (const capEdge of capEdges) {
+      const capNode = nodeMap.get(capEdge.from)
+      if (!capNode || capNode.type !== 'CAPABILITY') continue
+
+      const capStep: ExplanationStep = {
+        type: 'CAPABILITY',
+        label: capNode.label,
+        description: capNode.description,
+        reasoning: capNode.evidence,
+        nodeId: capNode.id,
+        connectingEdge: 'ADDRESSES',
+        edgeDirection: 'reverse', // edge is Capability→Blocker; traversed Blocker→Capability
+      }
+
+      // Find actions this capability REQUIRES
+      // Edge: Capability →(REQUIRES)→ Action (forward)
+      const actionEdges = graph.edges.filter(
+        (e) => e.from === capNode.id && e.type === 'REQUIRES'
       )
-      for (const edge of outcomeEdges) {
-        const outcomeNode = nodeMap.get(edge.to)
-        if (outcomeNode && outcomeNode.type === 'OUTCOME') {
-          steps.push({
-            type: 'OUTCOME',
-            label: outcomeNode.label,
-            description: outcomeNode.description,
-            reasoning: outcomeNode.evidence,
-            nodeId: outcomeNode.id,
-            connectingEdge: 'LEADS_TO',
-          })
-          break
+
+      if (actionEdges.length === 0) {
+        paths.push({
+          id: `blocker-${blockerNode.id}-cap-${capNode.id}`,
+          label: `Capability for: ${blockerNode.label}`,
+          kind: 'BLOCKER_RESOLUTION',
+          steps: [objectiveStep, blockerStep, capStep],
+          terminationReason: 'NO_FURTHER_VERIFIED_EDGE',
+        })
+        continue
+      }
+
+      for (const actionEdge of actionEdges) {
+        const actionNode = nodeMap.get(actionEdge.to)
+        if (!actionNode || actionNode.type !== 'ACTION') continue
+
+        const actionStep: ExplanationStep = {
+          type: 'ACTION',
+          label: actionNode.label,
+          description: actionNode.description,
+          reasoning: actionNode.evidence,
+          nodeId: actionNode.id,
+          connectingEdge: 'REQUIRES',
+          edgeDirection: 'forward',
         }
+
+        // Find outcomes this action LEADS_TO
+        // Edge: Action →(LEADS_TO)→ Outcome (forward)
+        const outcomeEdges = graph.edges.filter(
+          (e) => e.from === actionNode.id && e.type === 'LEADS_TO'
+        )
+
+        if (outcomeEdges.length === 0) {
+          paths.push({
+            id: `blocker-${blockerNode.id}-cap-${capNode.id}-action-${actionNode.id}`,
+            label: `Action: ${actionNode.label}`,
+            kind: 'BLOCKER_RESOLUTION',
+            steps: [objectiveStep, blockerStep, capStep, actionStep],
+            terminationReason: 'NO_FURTHER_VERIFIED_EDGE',
+          })
+          continue
+        }
+
+        for (const outcomeEdge of outcomeEdges) {
+          const outcomeNode = nodeMap.get(outcomeEdge.to)
+          if (!outcomeNode || outcomeNode.type !== 'OUTCOME') continue
+
+          paths.push({
+            id: `blocker-${blockerNode.id}-cap-${capNode.id}-action-${actionNode.id}-outcome-${outcomeNode.id}`,
+            label: `Resolution path: ${blockerNode.label}`,
+            kind: 'BLOCKER_RESOLUTION',
+            steps: [
+              objectiveStep,
+              blockerStep,
+              capStep,
+              actionStep,
+              {
+                type: 'OUTCOME',
+                label: outcomeNode.label,
+                description: outcomeNode.description,
+                reasoning: outcomeNode.evidence,
+                nodeId: outcomeNode.id,
+                connectingEdge: 'LEADS_TO',
+                edgeDirection: 'forward',
+              },
+            ],
+            terminationReason: 'COMPLETE',
+          })
+          break // one outcome per action
+        }
+        break // one action per capability
       }
     }
   }
 
-  return steps
+  // === BRANCH 3 (fallback): ACTION → OUTCOME when no blockers ===
+  if (blockerEdges.length === 0) {
+    const actionNodes = graph.nodes.filter((n) => n.type === 'ACTION')
+    for (const actionNode of actionNodes) {
+      const outcomeEdges = graph.edges.filter(
+        (e) => e.from === actionNode.id && e.type === 'LEADS_TO'
+      )
+      for (const outcomeEdge of outcomeEdges) {
+        const outcomeNode = nodeMap.get(outcomeEdge.to)
+        if (!outcomeNode || outcomeNode.type !== 'OUTCOME') continue
+
+        paths.push({
+          id: `action-${actionNode.id}`,
+          label: `Action: ${actionNode.label}`,
+          kind: 'ACTION_OUTCOME',
+          steps: [
+            {
+              type: 'ACTION',
+              label: actionNode.label,
+              description: actionNode.description,
+              reasoning: actionNode.evidence,
+              nodeId: actionNode.id,
+            },
+            {
+              type: 'OUTCOME',
+              label: outcomeNode.label,
+              description: outcomeNode.description,
+              reasoning: outcomeNode.evidence,
+              nodeId: outcomeNode.id,
+              connectingEdge: 'LEADS_TO',
+              edgeDirection: 'forward',
+            },
+          ],
+          terminationReason: 'COMPLETE',
+        })
+        break
+      }
+    }
+  }
+
+  return paths
+}
+
+// ---------------------------------------------------------------------------
+// Graph causal-structure validation
+// ---------------------------------------------------------------------------
+//
+// Validates that a graph contains NO invalid causal relationships. Used by
+// verifyStrategyRecord() to fail verification if a historical graph contains
+// a fabricated relationship (e.g., a Need→Blocker edge invented by old code).
+// ---------------------------------------------------------------------------
+
+export type GraphCausalViolationType =
+  | 'FABRICATED_NEED_BLOCKER_EDGE'
+  | 'ORPHAN_EDGE'
+  | 'INVALID_EDGE_TYPE_FOR_NODES'
+
+export interface GraphCausalViolation {
+  type: GraphCausalViolationType
+  description: string
+  edge?: DecisionEdge
+}
+
+/**
+ * Validate the causal structure of a DecisionGraph. Returns a list of
+ * violations — an empty list means the graph is causally valid.
+ *
+ * Detected violations:
+ *   - FABRICATED_NEED_BLOCKER_EDGE: any edge between a NEED and a BLOCKER
+ *     (either direction). The domain model does NOT contain a Need↔Blocker
+ *     relationship. Inventing one is the exact conflation this module prevents.
+ *   - ORPHAN_EDGE: an edge that references a non-existent node.
+ *   - INVALID_EDGE_TYPE_FOR_NODES: an edge type used between node types that
+ *     do not match the edge's semantic contract (e.g., a BLOCKS edge that
+ *     does not go Blocker→Objective).
+ */
+export function validateGraphCausalStructure(graph: DecisionGraph): GraphCausalViolation[] {
+  const violations: GraphCausalViolation[] = []
+  const nodeMap = new Map(graph.nodes.map((n) => [n.id, n]))
+
+  for (const edge of graph.edges) {
+    const fromNode = nodeMap.get(edge.from)
+    const toNode = nodeMap.get(edge.to)
+
+    if (!fromNode || !toNode) {
+      violations.push({
+        type: 'ORPHAN_EDGE',
+        description: `Edge ${edge.from}→${edge.to} (${edge.type}) references a non-existent node`,
+        edge,
+      })
+      continue
+    }
+
+    // FABRICATED_NEED_BLOCKER_EDGE — the exact conflation we prevent.
+    if (
+      (fromNode.type === 'NEED' && toNode.type === 'BLOCKER') ||
+      (fromNode.type === 'BLOCKER' && toNode.type === 'NEED')
+    ) {
+      violations.push({
+        type: 'FABRICATED_NEED_BLOCKER_EDGE',
+        description: `Fabricated causal edge between NEED and BLOCKER: ${edge.from}→${edge.to} (${edge.type}). The domain model does not contain a Need↔Blocker relationship.`,
+        edge,
+      })
+    }
+
+    // Edge-type semantic contracts
+    if (edge.type === 'BLOCKS' && (fromNode.type !== 'BLOCKER' || toNode.type !== 'OBJECTIVE')) {
+      violations.push({
+        type: 'INVALID_EDGE_TYPE_FOR_NODES',
+        description: `BLOCKS edge must go Blocker→Objective, but goes ${fromNode.type}→${toNode.type}`,
+        edge,
+      })
+    }
+    if (edge.type === 'CAUSES' && (fromNode.type !== 'OBJECTIVE' || toNode.type !== 'NEED')) {
+      violations.push({
+        type: 'INVALID_EDGE_TYPE_FOR_NODES',
+        description: `CAUSES edge must go Objective→Need, but goes ${fromNode.type}→${toNode.type}`,
+        edge,
+      })
+    }
+    if (edge.type === 'ADDRESSES') {
+      const valid = (fromNode.type === 'CAPABILITY' && toNode.type === 'BLOCKER') ||
+                    (fromNode.type === 'ACTION' && toNode.type === 'BLOCKER')
+      if (!valid) {
+        violations.push({
+          type: 'INVALID_EDGE_TYPE_FOR_NODES',
+          description: `ADDRESSES edge must go Capability→Blocker or Action→Blocker, but goes ${fromNode.type}→${toNode.type}`,
+          edge,
+        })
+      }
+    }
+    if (edge.type === 'REQUIRES' && (fromNode.type !== 'CAPABILITY' || toNode.type !== 'ACTION')) {
+      violations.push({
+        type: 'INVALID_EDGE_TYPE_FOR_NODES',
+        description: `REQUIRES edge must go Capability→Action, but goes ${fromNode.type}→${toNode.type}`,
+        edge,
+      })
+    }
+    if (edge.type === 'LEADS_TO') {
+      const valid = (fromNode.type === 'ACTION' && toNode.type === 'OUTCOME') ||
+                    (fromNode.type === 'CAPABILITY' && toNode.type === 'OUTCOME')
+      if (!valid) {
+        violations.push({
+          type: 'INVALID_EDGE_TYPE_FOR_NODES',
+          description: `LEADS_TO edge must go Action→Outcome or Capability→Outcome, but goes ${fromNode.type}→${toNode.type}`,
+          edge,
+        })
+      }
+    }
+  }
+
+  return violations
+}
+
+// ---------------------------------------------------------------------------
+// Explanation path verification
+// ---------------------------------------------------------------------------
+
+export interface PathVerificationViolation {
+  pathId: string
+  stepIndex: number
+  description: string
+}
+
+/**
+ * Verify that EVERY consecutive step pair in EVERY path has an exact graph
+ * edge (connectingEdge + edgeDirection). Returns a list of violations —
+ * an empty list means all paths are graph-verified.
+ *
+ * This is the core invariant: "No displayed path contains a hop without
+ * its exact graph edge."
+ */
+export function verifyExplanationPaths(
+  graph: DecisionGraph,
+  paths: ExplanationPath[],
+): PathVerificationViolation[] {
+  const violations: PathVerificationViolation[] = []
+
+  for (const path of paths) {
+    for (let i = 1; i < path.steps.length; i++) {
+      const prev = path.steps[i - 1]
+      const curr = path.steps[i]
+
+      if (!curr.connectingEdge || !curr.edgeDirection) {
+        violations.push({
+          pathId: path.id,
+          stepIndex: i,
+          description: `Step ${i} in path "${path.id}" has no connectingEdge/edgeDirection`,
+        })
+        continue
+      }
+
+      const edgeExists = curr.edgeDirection === 'forward'
+        ? graph.edges.some(
+            (e) => e.from === prev.nodeId && e.to === curr.nodeId && e.type === curr.connectingEdge
+          )
+        : graph.edges.some(
+            (e) => e.from === curr.nodeId && e.to === prev.nodeId && e.type === curr.connectingEdge
+          )
+
+      if (!edgeExists) {
+        violations.push({
+          pathId: path.id,
+          stepIndex: i,
+          description: `Step ${i} in path "${path.id}": no ${curr.connectingEdge} edge between ${prev.nodeId} and ${curr.nodeId} (direction: ${curr.edgeDirection})`,
+        })
+      }
+    }
+  }
+
+  return violations
 }
 
 function buildSummaryFromGraph(graph: DecisionGraph): string {

@@ -856,3 +856,56 @@ Stage Summary:
   1. No more silent strategy failure — explicit per-objective status, 207 on partial failure.
   2. All active objectives recomputed independently — findMany + deduplicate.
 - Production is aligned: local = GitHub = production = eb5054b.
+
+---
+Task ID: N0.6-multi-branch
+Agent: main (lead architect)
+Task: Fix N0.6 — model the explanation as MULTIPLE VERIFIED GRAPH PATHS, not one linear chain. Objective→Need and Blocker→Objective are separate proven relationships; do NOT invent a Need→Blocker edge.
+
+Work Log:
+- Reconciled: local = GitHub = d2f45d5. Production = 404 (DEPLOYMENT_NOT_FOUND on Vercel).
+- Audited commit d2f45d5's buildGraphDerivedCausalChain(): confirmed the conflation. The code tried to present Objective→Need AND Blocker→Objective as one linear path, using convoluted "restart the path from Objective→Blocker" logic (lines 706-731) when no Need→Blocker edge existed. This was semantically invalid.
+- REFACTORED src/lib/strategy/decision-graph.ts:
+  - Replaced `causalChain: ExplanationStep[]` + `causalChainScope: 'PRIMARY_PATH'` with `paths: ExplanationPath[]` + `explanationScope: 'MULTI_BRANCH_VERIFIED'`.
+  - Added `ExplanationPath` interface (id, label, kind, steps, terminationReason) — each path is a self-contained verified causal chain.
+  - Added `edgeDirection: 'forward' | 'reverse'` to `ExplanationStep` — makes edge semantics explicit and verifiable. The BLOCKS edge (Blocker→Objective) is traversed Objective→Blocker (reverse); the edge itself is unchanged.
+  - Rewrote buildExplanationPaths(): builds 3 branch types:
+    1. NEED_PROVENANCE: Objective→(CAUSES)→Need [terminates — no Need→Blocker edge invented]
+    2. BLOCKER_RESOLUTION: Objective←(BLOCKS)←Blocker←(ADDRESSES)←Capability→(REQUIRES)→Action→(LEADS_TO)→Outcome
+    3. ACTION_OUTCOME (fallback when no blockers): Action→(LEADS_TO)→Outcome
+  - Added validateGraphCausalStructure(): detects FABRICATED_NEED_BLOCKER_EDGE, ORPHAN_EDGE, INVALID_EDGE_TYPE_FOR_NODES. A graph cannot appear causally complete merely because nodes exist — the EDGES must be valid.
+  - Added verifyExplanationPaths(): verifies every consecutive step pair has an exact graph edge (connectingEdge + edgeDirection). Returns violations list.
+- FIXED graph builder orphan-edge bugs:
+  - ADDRESSES edges from capabilities now only created when the blocker node actually exists (capability triggers may reference blockers filtered out of strategy.blockers).
+  - bestTrajectory OUTCOME node now created EARLY (before the action loop) so both action LEADS_TO edges and ALTERNATIVE_TO edges can reference it without producing orphans.
+- UPDATED src/lib/strategy/replay.ts verifyStrategyRecord():
+  - Added `graphCausallyValid` to VerificationChecks.
+  - Added `graphCausalViolations` to VerificationResult.
+  - Verification now fails if the stored graph contains invalid causal relationships (e.g., a fabricated Need→Blocker edge from old buggy code).
+- UPDATED explanation route: ALWAYS regenerates the explanation from the stored (immutable) graph. The graph is the authoritative artifact; the explanation is a pure deterministic function of (strategy, graph). This preserves historical immutability while always returning the current explanation shape.
+- REWROTE StrategyExplanationPanel UI: renders multiple verified branches with explicit edge labels (CAUSES, BLOCKS, ADDRESSES, REQUIRES, LEADS_TO), direction arrows (→ forward, ← reverse), and termination badges ("verified" / "end of proven path").
+- UPDATED existing tests in strategy-decision-graph.test.ts: replaced causalChain references with paths, updated scope label test.
+- ADDED 14 new tests (529 → 536 total, +7 net) covering all 11 required invariants:
+  1. Objective→Need path is valid (CAUSES edge, forward)
+  2. Blocker→Objective relationship is valid (BLOCKS edge, reverse) — uses synthetic graph
+  3. Need→Blocker is NOT represented — tests both production + synthetic graphs
+  4. No displayed path contains a hop without its exact graph edge
+  5. Tampering with an unrelated graph edge is detected
+  6. Removing the Objective→Need edge truncates the need path
+  7. Removing the Blocker→Objective edge truncates the blocker path — uses synthetic graph
+  8. A graph cannot appear causally complete merely because nodes exist
+  9. Historical explanation unchanged after profile changes
+  10. Historical explanation unchanged after policy changes
+  11. Replay and verification remain deterministic
+  + 3 additional guards: fabricated Need→Blocker detection, well-formed graph validation, full 5-step blocker-resolution path verification
+- Used synthetic graphs for blocker-specific tests because the production strategy (exampleState + "earn more" intent) legitimately produces 0 blockers (blockers are only surfaced for certain trajectories). The synthetic graph has the exact Objective→Blocker→Capability→Action→Outcome chain.
+- Ran lint (clean) + typecheck (clean for all changed files) + tests (536/536 pass).
+- Committing + pushing to GitHub next. Then will diagnose the production 404 (Vercel DEPLOYMENT_NOT_FOUND).
+
+Stage Summary:
+- N0.6 is now architecturally correct: the explanation is MULTI-BRANCH VERIFIED, not one linear chain.
+- Objective→Need and Blocker→Objective are SEPARATE proven relationships, never conflated.
+- No Need→Blocker edge is invented. A missing edge TERMINATES a path.
+- Every consecutive node pair in every displayed path has the exact corresponding graph edge.
+- verifyStrategyRecord() now fails if a historical graph contains invalid causal relationships.
+- Production is BLOCKED (404) — will diagnose + fix the Vercel deployment next.

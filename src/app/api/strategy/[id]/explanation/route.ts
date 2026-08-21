@@ -44,7 +44,6 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   // Otherwise, reconstruct it from the stored strategy — but mark it as
   // legacyReconstructed so the audit trail is honest about provenance.
   let graph = strategy.decisionGraph
-  let explanation = strategy.explanation
 
   if (!graph) {
     // FIX #7: mark as legacy reconstructed — this graph was NOT originally
@@ -52,9 +51,15 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     // backward compatibility, not as historical evidence.
     graph = buildDecisionGraph(strategy, true)
   }
-  if (!explanation || typeof explanation === 'string') {
-    explanation = generateExplanation(strategy, graph)
-  }
+
+  // ALWAYS regenerate the explanation from the stored (immutable) graph.
+  // The graph is the authoritative immutable artifact; the explanation is a
+  // pure deterministic function of (strategy, graph). Regenerating guarantees
+  // the current explanation shape is always returned, even for historical
+  // records whose persisted explanation object used an older shape.
+  // This preserves historical immutability because the graph itself never
+  // changes after persistence.
+  const explanation = generateExplanation(strategy, graph)
 
   return NextResponse.json({
     recordId: record.id,
