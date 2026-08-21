@@ -1096,3 +1096,59 @@ Stage Summary:
 - Text similarity ≠ causal relationship (graph-derived types)
 - Numeric confidence ≠ evidence (qualitative ConfidenceLevel)
 - Passing tests ≠ architectural correctness (verified by code inspection)
+
+---
+Task ID: N0.7-final-hardening
+Agent: main (lead architect)
+Task: N0.7 final hardening — fix expectedOutcomeId referential integrity + server-authoritative outcome classification + Prisma enums.
+
+Work Log:
+- Reconciled: local = GitHub = production = 1d69d24 (previous hardening). Audited actual code per Principal Architect's review.
+- BLOCKER 1 confirmed: expectedOutcomeId was a plain String + index, NOT a Prisma relation. The action route used `existingExpected?.id ?? userActionId` (surrogate) in the evaluation input. The strategy route used `?? decisionRecordId`.
+- BLOCKER 2 confirmed: both outcome POST routes accepted `body.outcomeType` and used it if valid (`validatedType ?? existingExpected?.outcomeType ?? 'UNKNOWN'`). Client could choose causal classification.
+- FIXED BLOCKER 1: Added real Prisma self-relations:
+  - ActionOutcome: `expectedOutcome ActionOutcome? @relation("ActionOutcomeExpectedToObserved", ...)` + `observedOutcomes ActionOutcome[]`
+  - StrategyOutcome: `expectedOutcome StrategyOutcome? @relation("StrategyOutcomeExpectedToObserved", ...)` + `observedOutcomes StrategyOutcome[]`
+  - Both use `onDelete: NoAction` (historical outcomes are never deleted).
+  - Updated evaluation functions to accept `expectedOutcomeId: string | null`.
+  - Both routes now pass `existingExpected?.id ?? null` — NEVER a surrogate.
+- FIXED BLOCKER 2: Removed client outcomeType override from both routes:
+  - Action route: `const outcomeType = (existingExpected?.outcomeType as any) ?? 'UNKNOWN'` — body.outcomeType ignored.
+  - Strategy route: same. Removed deriveStrategyOutcomeTypeFromGraph call (observed inherits from expected, not re-derived).
+  - The OutcomeBody interface documents that body.outcomeType is IGNORED.
+- IMPROVEMENT 3: Converted String fields to real Prisma enums:
+  - `outcomeType OutcomeType @default(UNKNOWN)` (14 values including UNKNOWN)
+  - `evaluationStatus OutcomeEvaluationStatus @default(UNKNOWN)` (4 values)
+  - `confidenceLevel ConfidenceLevel?` (4 values)
+  - Added enum definitions to both production + local schemas.
+  - DB now enforces the controlled vocabulary — invalid values rejected at DB level.
+- IMPROVEMENT 4: Regression guard for numeric confidence:
+  - deriveOutcomeConfidence() returns null (deprecated).
+  - createExpectedOutcomes() produces confidenceLevel (qualitative), never confidence (numeric).
+  - ExpectedOutcomeRecord interface has confidenceLevel, NOT confidence.
+  - Added tests proving no new code writes numeric confidence.
+- WROTE 14 new final-hardening tests (612 → 626):
+  - expectedOutcomeId is null when no expected exists (never surrogate)
+  - expectedOutcomeId is the actual expected ID when it exists
+  - ExpectedOutcomeRecord has NO expectedOutcomeId (expected outcomes are root)
+  - Client cannot choose outcomeType (observed inherits from expected)
+  - Observed outcomeType is UNKNOWN when no expected exists
+  - Observed outcomeType matches expected when expected exists
+  - deriveOutcomeConfidence returns null
+  - deriveConfidenceLevel returns valid ConfidenceLevel
+  - ExpectedOutcomeRecord uses confidenceLevel, not confidence
+  - No new code writes numeric confidence (regression guard)
+  - outcomeType is a real Prisma enum
+  - OutcomeEvaluationStatus is a real Prisma enum
+  - ConfidenceLevel is a real Prisma enum
+- Ran lint (clean) + typecheck (clean) + tests (626/626 pass).
+- Committed 3d20087 + pushed to GitHub. CI succeeded (lint ✅, tests ✅ 626/626, build ✅, prisma db push ✅ — production DB updated with enums + self-relations, deploy ✅).
+- PRODUCTION ALIGNED: Local = GitHub = Production = 3d20087. dbConnected=true. /api/health returns 200.
+
+Stage Summary:
+- N0.7 final hardening COMPLETE.
+- expectedOutcomeId is now a DB-enforced foreign key (Prisma self-relation), never a surrogate.
+- Observed outcomeType is ALWAYS inherited from the expected outcome (or UNKNOWN), never client-chosen.
+- Controlled vocabulary is DB-enforced via real Prisma enums.
+- No new code writes numeric confidence (regression-guarded).
+- The authoritative chain is now structurally trustworthy at the database boundary.
