@@ -531,6 +531,11 @@ model ActionOutcome {
   userId          String
   userActionId    String
   decisionRecordId String?
+  outcomeType     String   @default("OTHER")
+  graphNodeId     String?
+  expectedByDate  DateTime?
+  confidence      Float?
+  evaluationStatus String  @default("UNKNOWN")
   predictedEffect String?
   actualEffect    String?
   predictedDurationMonths Float?
@@ -550,6 +555,8 @@ model ActionOutcome {
   @@index([decisionRecordId])
   @@index([status])
   @@index([provenance])
+  @@index([outcomeType])
+  @@index([evaluationStatus])
 }
 
 model StrategyOutcome {
@@ -557,6 +564,10 @@ model StrategyOutcome {
   userId          String
   decisionRecordId String
   objectiveId     String?
+  outcomeType     String   @default("ROUTE_UNLOCKED")
+  graphNodeId     String?
+  confidence      Float?
+  evaluationStatus String  @default("UNKNOWN")
   strategyFollowed String  @default("UNKNOWN")
   objectiveAchieved String @default("UNKNOWN")
   trajectoryBecameViable String @default("UNKNOWN")
@@ -576,4 +587,6 @@ model StrategyOutcome {
   @@index([objectiveId])
   @@index([strategyFollowed])
   @@index([provenance])
+  @@index([outcomeType])
+  @@index([evaluationStatus])
 }

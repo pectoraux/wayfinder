@@ -953,3 +953,66 @@ Stage Summary:
 - 11 required invariants + 3 additional guards are tested (536/536 pass).
 - Production is aligned: Local = GitHub = Production = ad14d0d4.
 - Production /api/health is reachable (HTTP 200, dbConnected=true).
+
+---
+Task ID: N0.7-outcome-intelligence
+Agent: main (lead architect)
+Task: N0.7 Outcome Intelligence — move Wayfinder from "here is the strategy" to "here is what happened after the strategy was followed." Trustworthy, immutable outcome ledger. NO adaptive learning.
+
+Work Log:
+- Reconciled: local = c8f7552 (rogue worklog-only commit on top of ad14d0d). GitHub = production = ad14d0d. Code identical. 536/536 tests pass.
+- Audited existing N0.4b outcome infrastructure (DO NOT duplicate — extend):
+  - Models: UserAction, ActionOutcome, StrategyOutcome, StrategyFeedback
+  - Lib: prediction.ts (server-derived predictions), evaluation.ts (MATCHED/PARTIALLY_MATCHED/MISSED/UNKNOWN)
+  - APIs: POST/GET /api/actions/[id]/outcome, POST/GET /api/strategy/[id]/outcome
+- EXTENDED Prisma schema (production + local mirror):
+  - ActionOutcome: + outcomeType, graphNodeId, expectedByDate, confidence, evaluationStatus + indexes
+  - StrategyOutcome: + outcomeType, graphNodeId, confidence, evaluationStatus + indexes
+  - All new fields are nullable/optional with defaults — backward compatible
+  - Ran db:push — local SQLite synced, Prisma Client regenerated
+- CREATED src/lib/strategy/outcome-intelligence.ts:
+  - OutcomeType enum (13 types based on real Wayfinder domain: ELIGIBILITY_OPENED, ROUTE_UNLOCKED, APPLICATION_SUBMITTED, APPLICATION_APPROVED, RESIDENCE_GRANTED, CITIZENSHIP_GRANTED, CREDENTIAL_RECOGNIZED, LANGUAGE_ACHIEVED, CAPABILITY_ACQUIRED, EMPLOYMENT_GAINED, INCOME_CHANGED, DOCUMENT_OBTAINED, OTHER)
+  - OutcomeEvaluationStatus enum (ACHIEVED, PARTIALLY_ACHIEVED, NOT_ACHIEVED, UNKNOWN)
+  - OutcomeProvenance enum (USER_CONFIRMED, DOCUMENT, SYSTEM_EVENT, POLICY_EVENT, EXTERNAL_VERIFICATION)
+  - deriveOutcomeTypeFromAction() — deterministic pattern-matching from action title/description
+  - deriveOutcomeTypeFromStrategy() — deterministic from best trajectory
+  - deriveOutcomeConfidence() — conservative, uses WORST uncertainty dimension (0.1/0.2/0.5/0.8), never fabricated
+  - deriveExpectedByDate() — from action timeframe + adoption date
+  - createExpectedOutcomes() — pure function, creates expected outcome records at adoption time
+  - evaluateActionOutcomeN07() + evaluateStrategyOutcomeN07() — deterministic, maps N0.4b MATCHED/MISSED to N0.7 ACHIEVED/NOT_ACHIEVED
+  - mapEvaluationStatus() — N0.4b → N0.7 status mapping
+  - validateOutcomeType() + validateProvenance() — input validation, client can never claim EXTERNAL_VERIFICATION
+- WIRED adoption route: auto-creates strategy-level expected StrategyOutcome inside the transaction (immutable, SYSTEM_DERIVED provenance, idempotency key). Action-level outcomes created when UserActions are synced.
+- WIRED actions route: when creating a UserAction, auto-creates an expected ActionOutcome with server-derived predictions + outcomeType + confidence + expectedByDate.
+- EXTENDED outcome POST routes: compute deterministic evaluationStatus, carry forward graphNodeId/expectedByDate/confidence from expected outcomes, accept optional outcomeType override (validated).
+- CREATED GET /api/strategy/[id]/outcomes: lists all expected + observed outcomes for a strategy (both action-level and strategy-level), with evaluations + summary stats. User-scoped + authenticated.
+- CREATED OutcomeTrackingSection UI component: shows Expected/Observed/Evaluation/Confidence per outcome. Clearly distinguishes USER_CONFIRMED from EXTERNALLY_VERIFIED. Summary stats (Achieved/Partial/Missed/Pending). Expandable details.
+- WIRED OutcomeTrackingSection into ResultsDashboard (after StrategyExplanationPanel).
+- WROTE 47 N0.7 tests (536 → 583):
+  - Expected outcome creation (5 tests): determinism, provenance, graph linkage, idempotency keys
+  - Outcome type derivation (5 tests): CREDENTIAL_RECOGNIZED, LANGUAGE_ACHIEVED, APPLICATION_SUBMITTED, strategy-level, determinism
+  - Confidence derivation (4 tests): conservative, null when no uncertainties, worst dimension, no fabricated precision
+  - Deterministic evaluation (8 tests): ACHIEVED, PARTIALLY_ACHIEVED, NOT_ACHIEVED, UNKNOWN, determinism, user-report flagging, status mapping
+  - Expected by date (2 tests): timeframe derivation, ONGOING returns null
+  - Provenance validation (4 tests): USER_CONFIRMED accepted, EXTERNAL_VERIFICATION rejected from client, accepted from server, invalid rejected
+  - Outcome type validation (2 tests): valid types accepted, invalid rejected
+  - No adaptive learning (2 tests): evaluation doesn't modify strategy, no probability/learning signal
+  - Strategy-level evaluation (3 tests): viability match, timeline variance, significant delay
+  - Immutability (2 tests): plain data, pure function
+  - No fabricated precision (2 tests): coarse confidence, no approval probability
+  - Historical strategy immutability (1 test): outcome creation doesn't modify strategy snapshot
+  - Existing architecture intact (7 tests): replay, verifyStrategyRecord, Strategy Memory, decision graph, needs/capabilities, evaluation module, prediction module
+- Ran lint (clean) + typecheck (clean) + tests (583/583 pass).
+- Committing + pushing to GitHub next. Then CI deploy + production verification.
+
+Stage Summary:
+- N0.7 Outcome Intelligence is architecturally complete.
+- Expected outcomes are deterministic, immutable, auto-created at adoption time.
+- Observed outcomes are immutable, append-only, with server-controlled provenance.
+- Evaluations are deterministic (ACHIEVED/PARTIALLY_ACHIEVED/NOT_ACHIEVED/UNKNOWN).
+- No fabricated precision (no fake approval probabilities).
+- No adaptive learning (outcomes don't change the engine).
+- Objective isolation preserved (outcomes carry objectiveId).
+- Graph OUTCOME nodes integrated (graphNodeId links outcomes to explanation graph).
+- Historical strategies remain immutable.
+- Existing N0.4b infrastructure extended, not duplicated.

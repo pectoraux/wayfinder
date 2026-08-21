@@ -37,6 +37,7 @@ import { Prisma } from '@prisma/client'
 import { STRATEGY_ENGINE_VERSION } from '@/lib/strategy/planning-context'
 import { resolveRuntimePolicy } from '@/lib/policy/runtime-resolver'
 import { getFullStrategyStaleness } from '@/lib/strategy/staleness'
+import { createExpectedOutcomes } from '@/lib/strategy/outcome-intelligence'
 import type { Strategy, StrategyProvenance } from '@/lib/strategy/types'
 import type { MobilityState, Intent, MobilityPlan } from '@/lib/domain/types'
 
@@ -353,6 +354,55 @@ export async function POST(req: Request) {
         },
       })
 
+      // N0.7: Auto-create expected outcomes (strategy-level only — action-level
+      // outcomes are created when UserActions are synced via /api/actions).
+      // These are IMMUTABLE predictions frozen at adoption time. They are
+      // append-only — never overwritten.
+      let expectedOutcomeCount = 0
+      try {
+        const expectedRecords = createExpectedOutcomes({
+          strategy: body.strategy,
+          decisionRecordId: record.id,
+          objectiveId: body.objectiveId,
+          userId,
+          adoptionDate: record.createdAt,
+          graph: body.strategy.decisionGraph,
+        })
+
+        // Only create the STRATEGY-level expected outcome here (action-level
+        // outcomes need a userActionId, which doesn't exist yet).
+        for (const rec of expectedRecords) {
+          if (rec.scope === 'STRATEGY') {
+            await tx.strategyOutcome.create({
+              data: {
+                userId: rec.userId,
+                decisionRecordId: rec.decisionRecordId,
+                objectiveId: rec.objectiveId,
+                outcomeType: rec.outcomeType,
+                graphNodeId: rec.graphNodeId ?? null,
+                confidence: rec.confidence ?? null,
+                evaluationStatus: 'UNKNOWN',
+                // Predicted fields (immutable)
+                predictedTrajectoryViable: rec.predictedTrajectoryViable ?? null,
+                predictedTimelineMonths: rec.predictedTimelineMonths ?? null,
+                predictedTotalCostUSD: rec.predictedTotalCostUSD ?? null,
+                // Provenance — system-derived at adoption time
+                provenance: 'SYSTEM_DERIVED',
+                idempotencyKey: rec.idempotencyKey,
+              },
+            })
+            expectedOutcomeCount++
+          }
+        }
+      } catch (expectedErr) {
+        // If expected outcome creation fails due to idempotency key conflict,
+        // that's OK — it means the expected outcome already exists (e.g., a
+        // retry). We don't fail the whole adoption for this.
+        if ((expectedErr as any)?.code !== 'P2002') {
+          throw expectedErr
+        }
+      }
+
       return { record, provenance: {
         strategyEngineVersion,
         runtimePolicyVersion: policyContext?.runtimeVersionId ?? '',
@@ -365,7 +415,7 @@ export async function POST(req: Request) {
         objectiveId: body.objectiveId,
         objectiveVersion,
         generatedAt: body.strategy.generatedAt,
-      } as StrategyProvenance }
+      } as StrategyProvenance, expectedOutcomeCount }
     })
 
     return NextResponse.json({
@@ -373,6 +423,7 @@ export async function POST(req: Request) {
       activePlanId: result.record.id,
       objectiveId: body.objectiveId,
       provenance: result.provenance,
+      expectedOutcomeCount: result.expectedOutcomeCount,
     })
   } catch (err: any) {
     // Detect the unique constraint violation on uniqueActiveObjectiveKey.

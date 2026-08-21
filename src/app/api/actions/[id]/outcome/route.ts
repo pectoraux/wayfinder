@@ -25,6 +25,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { db } from '@/lib/db'
 import { evaluateActionOutcome } from '@/lib/strategy/evaluation'
+import { evaluateActionOutcomeN07, validateOutcomeType } from '@/lib/strategy/outcome-intelligence'
 import { deriveActionPrediction } from '@/lib/strategy/prediction'
 import type { Strategy } from '@/lib/strategy/types'
 import { createHash } from 'crypto'
@@ -39,6 +40,9 @@ interface OutcomeBody {
   actualCostUSD?: number
   actualBlockerResolved?: boolean
   notes?: string
+  /** N0.7: Optional outcome type override. If not provided, the existing
+   *  expected outcome's type is used (or OTHER if no expected outcome exists). */
+  outcomeType?: string
   /** Client-generated event ID for idempotency. Retries with the same
    *  eventId return the existing event. Different eventIds create new events. */
   eventId?: string
@@ -115,11 +119,39 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     // 7. Create a NEW immutable outcome event.
     //    Provenance is ALWAYS USER_REPORTED for client submissions —
     //    the client cannot claim EXTERNALLY_VERIFIED.
+    //    N0.7: Compute deterministic evaluationStatus from predicted vs actual.
+    const n07Evaluation = evaluateActionOutcomeN07({
+      predictedEffect: prediction.predictedEffect,
+      actualEffect: body.actualEffect ?? null,
+      predictedDurationMonths: prediction.predictedDurationMonths,
+      actualDurationMonths: body.actualDurationMonths ?? null,
+      predictedCostUSD: prediction.predictedCostUSD,
+      actualCostUSD: body.actualCostUSD ?? null,
+      predictedBlockerResolved: prediction.predictedBlockerResolved,
+      actualBlockerResolved: body.actualBlockerResolved ?? null,
+      expectedOutcomeId: userActionId,
+      provenance: 'USER_REPORTED',
+    })
+
+    // Resolve outcomeType: client override (validated) or existing expected outcome's type
+    const validatedType = body.outcomeType ? validateOutcomeType(body.outcomeType) : null
+    const existingExpected = await db.actionOutcome.findFirst({
+      where: { userActionId, provenance: 'SYSTEM_DERIVED' },
+      orderBy: { createdAt: 'desc' },
+    })
+    const outcomeType = validatedType ?? (existingExpected?.outcomeType as any) ?? 'OTHER'
+
     const outcome = await db.actionOutcome.create({
       data: {
         userId,
         userActionId,
         decisionRecordId: prediction.decisionRecordId,
+        outcomeType,
+        // N0.7: carry forward graphNodeId + expectedByDate + confidence from expected outcome
+        graphNodeId: existingExpected?.graphNodeId ?? null,
+        expectedByDate: existingExpected?.expectedByDate ?? null,
+        confidence: existingExpected?.confidence ?? null,
+        evaluationStatus: n07Evaluation.status,
         // Predictions — server-derived, immutable
         predictedEffect: prediction.predictedEffect,
         predictedCostUSD: prediction.predictedCostUSD,
@@ -149,7 +181,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       actualBlockerResolved: outcome.actualBlockerResolved,
     })
 
-    return NextResponse.json({ outcome, evaluation, idempotent: false }, { status: 201 })
+    return NextResponse.json({ outcome, evaluation, n07Evaluation, idempotent: false }, { status: 201 })
   } catch (err) {
     console.error('[/api/actions/[id]/outcome]', err)
     return NextResponse.json({ error: 'Failed to record outcome' }, { status: 500 })

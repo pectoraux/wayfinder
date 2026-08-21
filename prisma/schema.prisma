@@ -565,6 +565,18 @@ model StrategyFeedback {
 ///
 /// Stores the PREDICTED values (immutable — from the original strategy) and
 /// the ACTUAL observed values (added separately when reality is known).
+///
+/// N0.7 OUTCOME INTELLIGENCE:
+///   - `outcomeType` is a controlled vocabulary based on real Wayfinder
+///     concepts (not free text).
+///   - `expectedByDate` records when the outcome was expected to occur.
+///   - `confidence` records how confident Wayfinder was in the prediction.
+///   - `graphNodeId` links this outcome to the DecisionGraph OUTCOME node.
+///   - `evaluationStatus` is the deterministic ACHIEVED/PARTIALLY_ACHIEVED/
+///     NOT_ACHIEVED/UNKNOWN result computed from predicted vs actual.
+///   - Expected outcomes are auto-created at adoption time (predicted fields
+///     only, actual fields null). Observed outcomes are recorded when reality
+///     is known. Both are immutable append-only events.
 model ActionOutcome {
   id              String   @id @default(cuid())
   userId          String
@@ -573,6 +585,21 @@ model ActionOutcome {
   /// The DecisionRecord that contained the prediction. Links to the exact
   /// strategy that predicted the action's effect.
   decisionRecordId String?
+  /// N0.7: Controlled vocabulary outcome type. Deterministic — derived from
+  /// the action's characteristics at adoption time.
+  outcomeType     String   @default("OTHER")
+  /// N0.7: The DecisionGraph OUTCOME node this expected outcome corresponds to.
+  /// Links the outcome tracking to the explanation graph.
+  graphNodeId     String?
+  /// N0.7: When the outcome was expected to occur (target date). Derived from
+  /// the action's timeframe + adoption date.
+  expectedByDate  DateTime?
+  /// N0.7: Wayfinder's confidence in the prediction (0.0-1.0). Conservative —
+  /// derived from the strategy's uncertainty assessments, never fabricated.
+  confidence      Float?
+  /// N0.7: Deterministic evaluation status, computed from predicted vs actual.
+  /// ACHIEVED | PARTIALLY_ACHIEVED | NOT_ACHIEVED | UNKNOWN
+  evaluationStatus String  @default("UNKNOWN")
   /// The predicted effect (from the original strategy, immutable).
   predictedEffect String?
   /// The actual observed effect.
@@ -605,6 +632,8 @@ model ActionOutcome {
   @@index([decisionRecordId])
   @@index([status])
   @@index([provenance])
+  @@index([outcomeType])
+  @@index([evaluationStatus])
 }
 
 /// The observed outcome of a strategy as a whole. A strategy can be followed
@@ -613,6 +642,17 @@ model ActionOutcome {
 ///
 /// Like ActionOutcome, stores the predicted trajectory state (immutable) and
 /// the actual observed state separately.
+///
+/// N0.7 OUTCOME INTELLIGENCE:
+///   - `outcomeType` is a controlled vocabulary based on real Wayfinder
+///     concepts (not free text).
+///   - `graphNodeId` links this outcome to the DecisionGraph OUTCOME node
+///     (the bestTrajectory outcome node).
+///   - `confidence` records how confident Wayfinder was in the prediction.
+///   - `evaluationStatus` is the deterministic ACHIEVED/PARTIALLY_ACHIEVED/
+///     NOT_ACHIEVED/UNKNOWN result computed from predicted vs actual.
+///   - Expected outcomes are auto-created at adoption time. Observed outcomes
+///     are recorded when reality is known. Both are immutable append-only.
 model StrategyOutcome {
   id              String   @id @default(cuid())
   userId          String
@@ -620,6 +660,17 @@ model StrategyOutcome {
   decisionRecordId String
   /// The objective this strategy was for.
   objectiveId     String?
+  /// N0.7: Controlled vocabulary outcome type. Deterministic — derived from
+  /// the strategy's best trajectory at adoption time.
+  outcomeType     String   @default("ROUTE_UNLOCKED")
+  /// N0.7: The DecisionGraph OUTCOME node this expected outcome corresponds to.
+  graphNodeId     String?
+  /// N0.7: Wayfinder's confidence in the prediction (0.0-1.0). Conservative —
+  /// derived from the strategy's uncertainty assessments, never fabricated.
+  confidence      Float?
+  /// N0.7: Deterministic evaluation status, computed from predicted vs actual.
+  /// ACHIEVED | PARTIALLY_ACHIEVED | NOT_ACHIEVED | UNKNOWN
+  evaluationStatus String  @default("UNKNOWN")
   /// Whether the strategy was followed.
   strategyFollowed String  @default("UNKNOWN") // UNKNOWN | FOLLOWED | PARTIALLY_FOLLOWED | ABANDONED
   /// Whether the objective was achieved.
@@ -652,4 +703,6 @@ model StrategyOutcome {
   @@index([objectiveId])
   @@index([strategyFollowed])
   @@index([provenance])
+  @@index([outcomeType])
+  @@index([evaluationStatus])
 }

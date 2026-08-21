@@ -20,6 +20,7 @@ import { ProfileEditor } from '@/components/wayfinder/profile-editor'
 import { IntentFrontierSection } from '@/components/wayfinder/strategy/intent-frontier-section'
 import { NeedsCapabilitySection } from '@/components/wayfinder/strategy/needs-capability-section'
 import { StrategyExplanationPanel } from '@/components/wayfinder/strategy/strategy-explanation-panel'
+import { OutcomeTrackingSection } from '@/components/wayfinder/strategy/outcome-tracking-section'
 import { PreferenceQuestionCard } from '@/components/wayfinder/strategy/preference-question-card'
 import { StrategyDiffBanner, type StrategyDiff } from '@/components/wayfinder/strategy/strategy-diff-banner'
 import { StrategyStalenessBanner } from '@/components/wayfinder/strategy/strategy-staleness-banner'
@@ -43,6 +44,7 @@ export function ResultsDashboard() {
   const strategyLoading = useWayfinder((s) => s.strategyLoading)
   const strategyError = useWayfinder((s) => s.strategyError)
   const activeRouteId = useWayfinder((s) => s.activeRouteId)
+  const activeRecordId = useWayfinder((s) => s.activeRecordId)
   const setActiveRoute = useWayfinder((s) => s.setActiveRoute)
   const runCounterfactual = useWayfinder((s) => s.runCounterfactual)
   const mobilityState = useWayfinder((s) => s.mobilityState)
@@ -242,6 +244,13 @@ export function ResultsDashboard() {
           {strategy.explanation && typeof strategy.explanation !== 'string' && (
             <section className="mb-6">
               <StrategyExplanationPanel explanation={strategy.explanation as any} />
+            </section>
+          )}
+
+          {/* N0.7 — Outcome Tracking */}
+          {activeRecordId && (
+            <section className="mb-6">
+              <OutcomeTrackingSection decisionRecordId={activeRecordId} />
             </section>
           )}
 

@@ -6,7 +6,9 @@ import { NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { db } from '@/lib/db'
-import type { ActionPlan } from '@/lib/strategy/types'
+import { deriveActionPrediction } from '@/lib/strategy/prediction'
+import { deriveOutcomeTypeFromAction, deriveOutcomeConfidence, deriveExpectedByDate } from '@/lib/strategy/outcome-intelligence'
+import type { ActionPlan, Strategy } from '@/lib/strategy/types'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -40,11 +42,12 @@ export async function POST(req: Request) {
 
   try {
     const body = await req.json()
-    const { actionPlan, strategyEngineVersion, runtimePolicyHash, decisionRecordId } = body as {
+    const { actionPlan, strategyEngineVersion, runtimePolicyHash, decisionRecordId, strategy } = body as {
       actionPlan: ActionPlan
       strategyEngineVersion?: string
       runtimePolicyHash?: string
       decisionRecordId?: string
+      strategy?: Strategy
     }
 
     if (!actionPlan?.actions) {
@@ -75,6 +78,48 @@ export async function POST(req: Request) {
           },
         })
         results.push(created)
+
+        // N0.7: Auto-create an expected ActionOutcome for this action.
+        // This is the IMMUTABLE prediction frozen at action-creation time.
+        // It records what Wayfinder expected this action to achieve, so
+        // later observations can be compared against it.
+        if (decisionRecordId) {
+          try {
+            const prediction = deriveActionPrediction(strategy ?? null, action.id, decisionRecordId)
+            const outcomeType = deriveOutcomeTypeFromAction(action)
+            const confidence = strategy ? deriveOutcomeConfidence(strategy) : null
+            const expectedByDate = deriveExpectedByDate(action, new Date())
+
+            await db.actionOutcome.create({
+              data: {
+                userId,
+                userActionId: created.id,
+                decisionRecordId: prediction.decisionRecordId,
+                outcomeType,
+                expectedByDate: expectedByDate,
+                confidence: confidence,
+                evaluationStatus: 'UNKNOWN',
+                // Predicted fields (immutable — from the historical strategy)
+                predictedEffect: prediction.predictedEffect,
+                predictedDurationMonths: prediction.predictedDurationMonths,
+                predictedCostUSD: prediction.predictedCostUSD,
+                predictedBlockerResolved: prediction.predictedBlockerResolved,
+                // No actual fields yet — these are filled when reality is known
+                // Provenance — system-derived at creation time
+                status: 'UNKNOWN',
+                provenance: 'SYSTEM_DERIVED',
+                idempotencyKey: `${userId}:${decisionRecordId}:expected:action:${action.id}`,
+              },
+            })
+          } catch (outcomeErr) {
+            // If expected outcome creation fails due to idempotency key conflict,
+            // that's OK — it means the expected outcome already exists.
+            // We don't fail the action sync for this.
+            if ((outcomeErr as any)?.code !== 'P2002') {
+              throw outcomeErr
+            }
+          }
+        }
       } else {
         // Update title/description but preserve status + decisionRecordId
         // if the existing action already has one (don't overwrite provenance)
