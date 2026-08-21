@@ -126,11 +126,13 @@ export interface VerificationChecks {
   policyAvailable: boolean
   replaySucceeded: boolean
   outputMatches: boolean
+  /** N0.6: Decision Graph comparison result. */
+  graphMatches: boolean
 }
 
 export interface VerificationResult {
   recordId: string
-  /** True only if ALL checks pass. */
+  /** True only if ALL checks pass (including graph comparison). */
   valid: boolean
   checks: VerificationChecks
   /** Diagnostic messages for any failed checks. */
@@ -139,6 +141,8 @@ export interface VerificationResult {
   provenance: StrategyProvenance | null
   /** The structured comparison (if replay succeeded). */
   comparison?: StrategyComparison
+  /** N0.6: The graph comparison result (if both graphs exist). */
+  graphComparison?: GraphComparisonResult
 }
 
 // ---------------------------------------------------------------------------
@@ -468,6 +472,7 @@ export async function verifyStrategyRecord(
     policyAvailable: false,
     replaySucceeded: false,
     outputMatches: false,
+    graphMatches: false,
   }
 
   const record = await resolveOwnedRecord(recordId, userId)
@@ -607,6 +612,31 @@ export async function verifyStrategyRecord(
           } else {
             errors.push(`output mismatch: ${comparison.differences.length} dimension(s) differ: ${comparison.differences.map((d) => d.dimension).join(', ')}`)
           }
+
+          // N0.6: Graph comparison — compare stored DecisionGraph against replayed
+          let graphComparison: GraphComparisonResult | undefined
+          const storedGraph = storedStrategy.decisionGraph
+          const replayedGraph = replayedStrategy.decisionGraph
+          if (storedGraph && replayedGraph) {
+            graphComparison = compareGraphs(storedGraph, replayedGraph)
+            if (graphComparison.status === 'EXACT_MATCH') {
+              checks.graphMatches = true
+            } else {
+              errors.push(`graph mismatch: ${graphComparison.differences.join('; ')}`)
+            }
+          } else if (storedGraph || replayedGraph) {
+            graphComparison = {
+              status: 'GRAPH_MISMATCH',
+              storedHash: storedGraph?.graphHash ?? 'none',
+              replayedHash: replayedGraph?.graphHash ?? 'none',
+              differences: ['graph exists in one strategy but not the other'],
+            }
+            errors.push('graph mismatch: graph exists in one strategy but not the other')
+          } else {
+            // Both lack a graph (pre-N0.6 records) — graph check passes vacuously
+            checks.graphMatches = true
+          }
+
           return {
             recordId,
             valid: errors.length === 0,
@@ -614,6 +644,7 @@ export async function verifyStrategyRecord(
             errors,
             provenance,
             comparison,
+            graphComparison,
           }
         } catch (err) {
           errors.push(`replay failed: ${err instanceof Error ? err.message : String(err)}`)
