@@ -909,3 +909,47 @@ Stage Summary:
 - Every consecutive node pair in every displayed path has the exact corresponding graph edge.
 - verifyStrategyRecord() now fails if a historical graph contains invalid causal relationships.
 - Production is BLOCKED (404) — will diagnose + fix the Vercel deployment next.
+
+---
+Task ID: N0.6-multi-branch-deploy
+Agent: main (lead architect)
+Task: Deploy the N0.6 multi-branch fix to production + browser-verify the explanation panel.
+
+Work Log:
+- Committed a5fe963 (multi-branch refactor) + pushed to GitHub. CI succeeded — Vercel deployed a5fe963 to production.
+- Browser-verified on production: strategy results page CRASHED with React error #31 ("Objects are not valid as a React child"). Root cause: strategy-hero.tsx line 305 rendered `strategy.explanation` directly, but it's now a StrategyExplanation object (not a string).
+- Fixed strategy-hero.tsx: `typeof strategy.explanation === 'string' ? strategy.explanation : strategy.explanation?.summary || 'No explanation available.'`
+- Committed ad14d0d (hero.tsx fix) + pushed. First CI deploy failed with Vercel rate limit (100 deployments/day exhausted by previous session).
+- Re-triggered CI via workflow_dispatch API. Second attempt succeeded — Vercel deployed ad14d0d to production.
+- PRODUCTION ALIGNED: Local = GitHub = Production = ad14d0d4. /api/health returns 200, dbConnected=true.
+- Browser-verified on production (ad14d0d):
+  - Logged in via demo user.
+  - Completed 4-step intake flow (Origin, Human capital, Economics, Review).
+  - Built mobility plan → strategy generated (Portugal · D7 Residence Visa).
+  - Strategy results page rendered WITHOUT crashing (hero.tsx fix works).
+  - Multi-branch explanation panel rendered correctly:
+    - Header: "Why this strategy?" + "Verified reasoning branches — no AI guesses."
+    - Summary with objective, trajectory, capability.
+    - "REASONING BRANCHES (2)" — two NEED_PROVENANCE branches:
+      1. Objective: earn_more →(CAUSES)→ Need: higher income in a stronger economy [end of proven path]
+      2. Objective: earn_more →(CAUSES)→ Need: Maximize income [end of proven path]
+    - Each branch shows the CAUSES edge label between steps.
+    - "end of proven path" badge — correctly terminating, NO Need→Blocker edge invented.
+    - Assumptions section (2 items).
+    - Alternatives considered (3 trajectories).
+    - Graph stats: 23 reasoning nodes, 18 relationships, engine 1.0.0.
+  - No console errors after page reload.
+  - No dev log errors.
+- Ran final test suite: 536/536 pass. Lint clean.
+
+Stage Summary:
+- N0.6 is COMPLETE. Every displayed reasoning relationship is literally represented by a graph edge.
+- The explanation is MULTI-BRANCH VERIFIED:
+  - Objective→Need is a separate proven relationship (CAUSES edge, forward).
+  - Blocker→Objective is a separate proven relationship (BLOCKS edge, reverse traversal).
+  - No Need→Blocker edge is invented. The need branch TERMINATES.
+  - The blocker-resolution chain (Blocker→Capability→Action→Outcome) follows exact graph edges.
+- verifyStrategyRecord() fails if a historical graph contains invalid causal relationships.
+- 11 required invariants + 3 additional guards are tested (536/536 pass).
+- Production is aligned: Local = GitHub = Production = ad14d0d4.
+- Production /api/health is reachable (HTTP 200, dbConnected=true).
