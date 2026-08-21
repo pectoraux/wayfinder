@@ -1152,3 +1152,34 @@ Stage Summary:
 - Controlled vocabulary is DB-enforced via real Prisma enums.
 - No new code writes numeric confidence (regression-guarded).
 - The authoritative chain is now structurally trustworthy at the database boundary.
+
+---
+Task ID: N0.7-final-hardening-2
+Agent: main (lead architect)
+Task: Fix two remaining blockers — text-based outcome classification + incomplete graph edge validation.
+
+Work Log:
+- Reconciled: local = GitHub = 17ea472 (worklog on top of 3d20087). Production = 3d20087. Audited actual code per Principal Architect's review.
+- BLOCKER 1 confirmed: deriveOutcomeTypeFromGraph() and deriveStrategyOutcomeTypeFromGraph() used label.includes('citizenship'), label.includes('residence'), etc. — text-based semantic inference.
+- BLOCKER 2 confirmed: validateGraphNodeLinkage() only checked node existence + type. Did NOT verify the ACTION→LEADS_TO→OUTCOME causal edge. createExpectedOutcomes() used the edge destination as graphNodeId without validating the destination was an OUTCOME node.
+- FIXED BLOCKER 1: Removed ALL label.includes()/description.includes() from graph-based derivation. New PROVENANCE_SOURCE_TO_OUTCOME_TYPE map contains only ONE exact mapping: 'DesiredCapability.potentialUnlocks' → CAPABILITY_ACQUIRED. All other sources (including 'Strategy.bestTrajectory') return UNKNOWN. Label/description text is NEVER read.
+- FIXED BLOCKER 2: New validateActionOutcomeLinkage() verifies the FULL causal chain:
+  1. ACTION node exists + has type ACTION
+  2. LEADS_TO edge exists from ACTION
+  3. Destination node exists + has type OUTCOME
+  4-6. edge.from/to/type verified by the filter
+  If ANY condition fails, returns { valid: false, reason } with specific reason.
+- New validateStrategyOutcomeLinkage() verifies strategy-level OUTCOME node exists + has type OUTCOME (does not assume generated ID is valid).
+- Updated createExpectedOutcomes() + /api/actions route to use the new validation functions. graphNodeId only set when full causal chain is valid.
+- Deprecated validateGraphNodeLinkage() retained for backward compat but no longer used by canonical N0.7 path.
+- WROTE 16 new tests (626 → 642): Tests A-K covering both blockers.
+- Ran lint (clean) + typecheck (clean) + tests (642/642 pass).
+- Committed 3118b53 + pushed to GitHub. CI succeeded (lint ✅, tests ✅ 642/642, build ✅, deploy ✅).
+- PRODUCTION ALIGNED: Local = GitHub = Production = 3118b53. dbConnected=true.
+
+Stage Summary:
+- N0.7 final hardening COMPLETE.
+- OutcomeType is NOT inferred from display text — uses only authoritative provenance.source.
+- Graph linkage verifies the actual causal edge (ACTION→LEADS_TO→OUTCOME).
+- graphNodeId always identifies a real historical OUTCOME node connected via a valid LEADS_TO edge.
+- The authoritative chain is now structurally trustworthy.
