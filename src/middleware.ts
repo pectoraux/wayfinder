@@ -11,6 +11,10 @@
 //         /api/mobile/contract, static assets.
 // Protected (any authenticated user): everything else.
 // Protected (ADMIN role): /admin and /api/admin/*.
+//
+// RUNTIME: This middleware runs on the Node.js runtime (not Edge) because
+// it imports `jose` for JWT verification, which pushes the bundle over the
+// Edge Function 1MB size limit. The `runtime` export is set via next.config.
 
 import { NextResponse } from "next/server"
 import type { NextRequest } from "next/server"
@@ -67,3 +71,6 @@ export const config = {
   // Run on everything except Next.js internals and static asset extensions.
   matcher: ["/((?!_next/static|_next/image|favicon.ico|robots.txt|logo.svg|.*\\..*).*)"],
 }
+
+// Node.js runtime (not Edge) — jose JWT verification requires it
+export const runtime = 'nodejs'
