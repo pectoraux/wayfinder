@@ -69,7 +69,14 @@ jobs:
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
       - name: Build
-        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        run: |
+          # Regenerate Prisma Client for production RIGHT BEFORE the Vercel build,
+          # using the Vercel-pulled env (which has the production DATABASE_URL).
+          # This ensures the Prisma query engine matches the Vercel runtime
+          # (rhel-openssl-3.0.x), not the SQLite engine from the test step.
+          export DATABASE_URL=$(grep '^DATABASE_URL=' .vercel/.env.production.local | cut -d'=' -f2- | tr -d '"')
+          npx prisma generate
+          vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
