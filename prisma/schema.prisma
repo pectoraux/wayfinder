@@ -567,13 +567,17 @@ model StrategyFeedback {
 /// the ACTUAL observed values (added separately when reality is known).
 ///
 /// N0.7 OUTCOME INTELLIGENCE:
-///   - `outcomeType` is a controlled vocabulary based on real Wayfinder
-///     concepts (not free text).
+///   - `outcomeType` is a controlled vocabulary (Prisma enum) based on real
+///     Wayfinder domain concepts. Derived from the historical DecisionGraph
+///     (authoritative), not text. Falls back to UNKNOWN.
 ///   - `expectedByDate` records when the outcome was expected to occur.
-///   - `confidence` records how confident Wayfinder was in the prediction.
+///   - `confidenceLevel` records how confident Wayfinder was (qualitative).
 ///   - `graphNodeId` links this outcome to the DecisionGraph OUTCOME node.
 ///   - `evaluationStatus` is the deterministic ACHIEVED/PARTIALLY_ACHIEVED/
 ///     NOT_ACHIEVED/UNKNOWN result computed from predicted vs actual.
+///   - `expectedOutcomeId` is a real Prisma self-relation — an observed
+///     outcome explicitly references the exact expected outcome event it
+///     evaluates. Never a surrogate ID. Null when no expected outcome exists.
 ///   - Expected outcomes are auto-created at adoption time (predicted fields
 ///     only, actual fields null). Observed outcomes are recorded when reality
 ///     is known. Both are immutable append-only events.
@@ -585,10 +589,10 @@ model ActionOutcome {
   /// The DecisionRecord that contained the prediction. Links to the exact
   /// strategy that predicted the action's effect.
   decisionRecordId String?
-  /// N0.7: Controlled vocabulary outcome type. Deterministic — derived from
-  /// the historical DecisionGraph at adoption time (authoritative), not text.
-  /// Falls back to UNKNOWN when the graph doesn't provide a relationship.
-  outcomeType     String   @default("UNKNOWN")
+  /// N0.7: Controlled vocabulary outcome type (Prisma enum). Deterministic —
+  /// derived from the historical DecisionGraph at adoption time (authoritative),
+  /// not text. Falls back to UNKNOWN when the graph doesn't provide a relationship.
+  outcomeType     OutcomeType @default(UNKNOWN)
   /// N0.7: The DecisionGraph OUTCOME node this expected outcome corresponds to.
   /// Links the outcome tracking to the explanation graph. Only set when the
   /// node actually exists in the historical graph (validated).
@@ -598,19 +602,22 @@ model ActionOutcome {
   expectedByDate  DateTime?
   /// N0.7: @deprecated Numeric confidence. Retained for backward compat with
   /// existing records, but new code must NOT fabricate numeric probabilities.
-  /// Use `confidenceLevel` (qualitative) instead.
+  /// Use `confidenceLevel` (qualitative) instead. Enforced by regression test.
   confidence      Float?
-  /// N0.7: Qualitative confidence level (HIGH/MEDIUM/LOW/UNKNOWN). Never a
-  /// fabricated probability. Derived from the strategy's uncertainty
-  /// assessments (worst dimension, conservative).
-  confidenceLevel String?
-  /// N0.7: For OBSERVED outcomes — the exact expected outcome event this
-  /// observation evaluates. Explicit causal identity. Nullable for backward
-  /// compat with pre-N0.7-hardening records.
+  /// N0.7: Qualitative confidence level (Prisma enum). Never a fabricated
+  /// probability. Derived from the strategy's uncertainty assessments (worst
+  /// dimension, conservative).
+  confidenceLevel ConfidenceLevel?
+  /// N0.7: For OBSERVED outcomes — a real Prisma self-relation to the exact
+  /// expected outcome event this observation evaluates. Explicit causal
+  /// identity enforced by referential integrity. Null when no expected outcome
+  /// exists (never a surrogate ID like userActionId).
   expectedOutcomeId String?
-  /// N0.7: Deterministic evaluation status, computed from predicted vs actual.
-  /// ACHIEVED | PARTIALLY_ACHIEVED | NOT_ACHIEVED | UNKNOWN
-  evaluationStatus String  @default("UNKNOWN")
+  expectedOutcome  ActionOutcome? @relation("ActionOutcomeExpectedToObserved", fields: [expectedOutcomeId], references: [id], onDelete: NoAction)
+  observedOutcomes ActionOutcome[] @relation("ActionOutcomeExpectedToObserved")
+  /// N0.7: Deterministic evaluation status (Prisma enum), computed from
+  /// predicted vs actual.
+  evaluationStatus OutcomeEvaluationStatus @default(UNKNOWN)
   /// The predicted effect (from the original strategy, immutable).
   predictedEffect String?
   /// The actual observed effect.
@@ -656,13 +663,17 @@ model ActionOutcome {
 /// the actual observed state separately.
 ///
 /// N0.7 OUTCOME INTELLIGENCE:
-///   - `outcomeType` is a controlled vocabulary based on real Wayfinder
-///     concepts (not free text).
+///   - `outcomeType` is a controlled vocabulary (Prisma enum) based on real
+///     Wayfinder domain concepts. Derived from the historical DecisionGraph
+///     (authoritative), not text. Falls back to UNKNOWN.
 ///   - `graphNodeId` links this outcome to the DecisionGraph OUTCOME node
 ///     (the bestTrajectory outcome node).
-///   - `confidence` records how confident Wayfinder was in the prediction.
+///   - `confidenceLevel` records how confident Wayfinder was (qualitative).
 ///   - `evaluationStatus` is the deterministic ACHIEVED/PARTIALLY_ACHIEVED/
 ///     NOT_ACHIEVED/UNKNOWN result computed from predicted vs actual.
+///   - `expectedOutcomeId` is a real Prisma self-relation — an observed
+///     outcome explicitly references the exact expected outcome event it
+///     evaluates. Never a surrogate ID. Null when no expected outcome exists.
 ///   - Expected outcomes are auto-created at adoption time. Observed outcomes
 ///     are recorded when reality is known. Both are immutable append-only.
 model StrategyOutcome {
@@ -672,25 +683,29 @@ model StrategyOutcome {
   decisionRecordId String
   /// The objective this strategy was for.
   objectiveId     String?
-  /// N0.7: Controlled vocabulary outcome type. Deterministic — derived from
-  /// the historical DecisionGraph (authoritative), not text. Falls back to
-  /// UNKNOWN when the graph doesn't provide a relationship.
-  outcomeType     String   @default("UNKNOWN")
+  /// N0.7: Controlled vocabulary outcome type (Prisma enum). Deterministic —
+  /// derived from the historical DecisionGraph (authoritative), not text.
+  /// Falls back to UNKNOWN when the graph doesn't provide a relationship.
+  outcomeType     OutcomeType @default(UNKNOWN)
   /// N0.7: The DecisionGraph OUTCOME node this expected outcome corresponds to.
   /// Only set when the node actually exists in the historical graph (validated).
   graphNodeId     String?
   /// N0.7: @deprecated Numeric confidence. Retained for backward compat.
-  /// New code uses `confidenceLevel` (qualitative).
+  /// New code uses `confidenceLevel` (qualitative). Enforced by regression test.
   confidence      Float?
-  /// N0.7: Qualitative confidence level (HIGH/MEDIUM/LOW/UNKNOWN). Never a
-  /// fabricated probability.
-  confidenceLevel String?
-  /// N0.7: For OBSERVED outcomes — the exact expected outcome event this
-  /// observation evaluates. Explicit causal identity.
+  /// N0.7: Qualitative confidence level (Prisma enum). Never a fabricated
+  /// probability.
+  confidenceLevel ConfidenceLevel?
+  /// N0.7: For OBSERVED outcomes — a real Prisma self-relation to the exact
+  /// expected outcome event this observation evaluates. Explicit causal
+  /// identity enforced by referential integrity. Null when no expected outcome
+  /// exists (never a surrogate ID like decisionRecordId).
   expectedOutcomeId String?
-  /// N0.7: Deterministic evaluation status, computed from predicted vs actual.
-  /// ACHIEVED | PARTIALLY_ACHIEVED | NOT_ACHIEVED | UNKNOWN
-  evaluationStatus String  @default("UNKNOWN")
+  expectedOutcome  StrategyOutcome? @relation("StrategyOutcomeExpectedToObserved", fields: [expectedOutcomeId], references: [id], onDelete: NoAction)
+  observedOutcomes StrategyOutcome[] @relation("StrategyOutcomeExpectedToObserved")
+  /// N0.7: Deterministic evaluation status (Prisma enum), computed from
+  /// predicted vs actual.
+  evaluationStatus OutcomeEvaluationStatus @default(UNKNOWN)
   /// Whether the strategy was followed.
   strategyFollowed String  @default("UNKNOWN") // UNKNOWN | FOLLOWED | PARTIALLY_FOLLOWED | ABANDONED
   /// Whether the objective was achieved.
@@ -726,4 +741,46 @@ model StrategyOutcome {
   @@index([outcomeType])
   @@index([evaluationStatus])
   @@index([expectedOutcomeId])
+}
+
+// ---------------------------------------------------------------------------
+// N0.7 Controlled Vocabularies — real Prisma enums (DB-enforced)
+// ---------------------------------------------------------------------------
+
+/// N0.7: Controlled vocabulary outcome type. Based on real Wayfinder domain
+/// concepts. Derived from the historical DecisionGraph (authoritative), not
+/// text. UNKNOWN is used when the graph does not provide a relationship.
+enum OutcomeType {
+  ELIGIBILITY_OPENED
+  ROUTE_UNLOCKED
+  APPLICATION_SUBMITTED
+  APPLICATION_APPROVED
+  RESIDENCE_GRANTED
+  CITIZENSHIP_GRANTED
+  CREDENTIAL_RECOGNIZED
+  LANGUAGE_ACHIEVED
+  CAPABILITY_ACQUIRED
+  EMPLOYMENT_GAINED
+  INCOME_CHANGED
+  DOCUMENT_OBTAINED
+  OTHER
+  UNKNOWN
+}
+
+/// N0.7: Deterministic evaluation status, computed from predicted vs actual.
+/// ACHIEVED | PARTIALLY_ACHIEVED | NOT_ACHIEVED | UNKNOWN
+enum OutcomeEvaluationStatus {
+  ACHIEVED
+  PARTIALLY_ACHIEVED
+  NOT_ACHIEVED
+  UNKNOWN
+}
+
+/// N0.7: Qualitative confidence level. Never a fabricated probability.
+/// Derived from the strategy's uncertainty assessments (worst dimension).
+enum ConfidenceLevel {
+  HIGH
+  MEDIUM
+  LOW
+  UNKNOWN
 }

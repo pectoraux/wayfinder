@@ -27,7 +27,6 @@ import { db } from '@/lib/db'
 import { evaluateActionOutcome } from '@/lib/strategy/evaluation'
 import {
   evaluateActionOutcomeN07,
-  validateOutcomeType,
   validateProvenance,
 } from '@/lib/strategy/outcome-intelligence'
 import { deriveActionPrediction } from '@/lib/strategy/prediction'
@@ -45,8 +44,10 @@ interface OutcomeBody {
   actualCostUSD?: number
   actualBlockerResolved?: boolean
   notes?: string
-  /** N0.7: Optional outcome type override. If not provided, the existing
-   *  expected outcome's type is used (or UNKNOWN if no expected outcome exists). */
+  /** N0.7: Client-provided outcomeType is REJECTED. The observed outcome's
+   *  type is ALWAYS inherited from the expected outcome (or UNKNOWN if no
+   *  expected outcome exists). The client cannot choose causal classification.
+   *  This field is documented here so callers know it is ignored. */
   outcomeType?: string
   /** N0.7: Client-provided provenance is REJECTED. The server always sets
    *  provenance to USER_REPORTED for client submissions. This field is
@@ -148,14 +149,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       actualCostUSD: body.actualCostUSD ?? null,
       predictedBlockerResolved: prediction.predictedBlockerResolved,
       actualBlockerResolved: body.actualBlockerResolved ?? null,
-      expectedOutcomeId: existingExpected?.id ?? userActionId,
+      // N0.7: expectedOutcomeId is the actual expected outcome ID, or null.
+      // NEVER a surrogate (userActionId).
+      expectedOutcomeId: existingExpected?.id ?? null,
       provenance: 'USER_REPORTED',
     })
 
-    // Resolve outcomeType: client override (validated) or existing expected outcome's type.
-    // Falls back to UNKNOWN (not a text guess).
-    const validatedType = body.outcomeType ? validateOutcomeType(body.outcomeType) : null
-    const outcomeType = validatedType ?? (existingExpected?.outcomeType as any) ?? 'UNKNOWN'
+    // N0.7: Server-authoritative outcome classification. The observed
+    // outcome's type is ALWAYS inherited from the expected outcome. If no
+    // expected outcome exists, it is UNKNOWN. The client CANNOT choose the
+    // causal classification — body.outcomeType is ignored.
+    const outcomeType = (existingExpected?.outcomeType as any) ?? 'UNKNOWN'
 
     // N0.7: Client cannot claim EXTERNALLY_VERIFIED. Any client-provided
     // provenance is rejected/downgraded to USER_REPORTED.

@@ -190,7 +190,7 @@ export interface ObservedOutcome {
   /** The outcome record ID. */
   id: string
   /** The expected outcome this observation corresponds to. */
-  expectedOutcomeId: string
+  expectedOutcomeId: string | null
   /** The DecisionRecord this belongs to. */
   decisionRecordId: string
   /** The objective this strategy was for. */
@@ -227,7 +227,7 @@ export interface OutcomeEvaluation {
   /** Human-readable explanation. */
   explanation: string
   /** The expected outcome that was evaluated. */
-  expectedOutcomeId: string
+  expectedOutcomeId: string | null
   /** Per-dimension comparison (if any numeric/boolean dimensions exist). */
   dimensions: Array<{
     name: string
@@ -807,7 +807,7 @@ export function evaluateActionOutcomeN07(opts: {
   actualCostUSD?: number | null
   predictedBlockerResolved?: boolean | null
   actualBlockerResolved?: boolean | null
-  expectedOutcomeId: string
+  expectedOutcomeId: string | null
   provenance?: string
 }): OutcomeEvaluation {
   const n04Result = evaluateActionOutcome({
@@ -848,7 +848,7 @@ export function evaluateStrategyOutcomeN07(opts: {
   predictedTotalCostUSD?: number | null
   actualTotalCostUSD?: number | null
   strategyFollowed?: string | null
-  expectedOutcomeId: string
+  expectedOutcomeId: string | null
   provenance?: string
 }): OutcomeEvaluation {
   const n04Result = evaluateStrategyOutcome({

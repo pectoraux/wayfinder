@@ -24,13 +24,10 @@ import { db } from '@/lib/db'
 import { evaluateStrategyOutcome } from '@/lib/strategy/evaluation'
 import {
   evaluateStrategyOutcomeN07,
-  validateOutcomeType,
   validateProvenance,
-  deriveStrategyOutcomeTypeFromGraph,
   deriveConfidenceLevel,
 } from '@/lib/strategy/outcome-intelligence'
 import { deriveStrategyPrediction } from '@/lib/strategy/prediction'
-import { buildDecisionGraph } from '@/lib/strategy/decision-graph'
 import type { Strategy } from '@/lib/strategy/types'
 import { createHash } from 'crypto'
 
@@ -46,7 +43,9 @@ interface StrategyOutcomeBody {
   actualTimelineMonths?: number
   actualTotalCostUSD?: number
   notes?: string
-  /** N0.7: Optional outcome type override (validated). */
+  /** N0.7: Client-provided outcomeType is REJECTED. The observed outcome's
+   *  type is ALWAYS inherited from the expected outcome (or UNKNOWN if no
+   *  expected outcome exists). The client cannot choose causal classification. */
   outcomeType?: string
   /** N0.7: Client-provided provenance is REJECTED. Server always sets
    *  USER_REPORTED for client submissions. Documented but ignored. */
@@ -130,19 +129,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       orderBy: { createdAt: 'desc' },
     })
 
-    // Reconstruct the historical graph from the strategy snapshot
-    const historicalGraph = strategy ? buildDecisionGraph(strategy) : null
-
-    // N0.7: outcomeType from the graph (authoritative), or carry forward
-    // from the expected outcome, or UNKNOWN.
-    const validatedType = body.outcomeType ? validateOutcomeType(body.outcomeType) : null
-    const graphOutcomeType = (historicalGraph && strategy)
-      ? deriveStrategyOutcomeTypeFromGraph(historicalGraph, strategy)
-      : 'UNKNOWN'
-    const outcomeType = validatedType
-      ?? (existingExpected?.outcomeType as any)
-      ?? graphOutcomeType
-      ?? 'UNKNOWN'
+    // N0.7: Server-authoritative outcome classification. The observed
+    // outcome's type is ALWAYS inherited from the expected outcome. If no
+    // expected outcome exists, it is UNKNOWN. The client CANNOT choose the
+    // causal classification — body.outcomeType is ignored.
+    const outcomeType = (existingExpected?.outcomeType as any) ?? 'UNKNOWN'
 
     // N0.7: confidenceLevel from the historical strategy (qualitative)
     const confidenceLevel = strategy
@@ -164,7 +155,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       predictedTotalCostUSD: prediction.predictedTotalCostUSD,
       actualTotalCostUSD: body.actualTotalCostUSD ?? null,
       strategyFollowed,
-      expectedOutcomeId: existingExpected?.id ?? decisionRecordId,
+      // N0.7: expectedOutcomeId is the actual expected outcome ID, or null.
+      // NEVER a surrogate (decisionRecordId).
+      expectedOutcomeId: existingExpected?.id ?? null,
       provenance: finalProvenance,
     })
 

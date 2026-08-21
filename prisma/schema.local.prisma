@@ -531,13 +531,15 @@ model ActionOutcome {
   userId          String
   userActionId    String
   decisionRecordId String?
-  outcomeType     String   @default("UNKNOWN")
+  outcomeType     OutcomeType @default(UNKNOWN)
   graphNodeId     String?
   expectedByDate  DateTime?
   confidence      Float?
-  confidenceLevel String?
+  confidenceLevel ConfidenceLevel?
   expectedOutcomeId String?
-  evaluationStatus String  @default("UNKNOWN")
+  expectedOutcome  ActionOutcome? @relation("ActionOutcomeExpectedToObserved", fields: [expectedOutcomeId], references: [id], onDelete: NoAction)
+  observedOutcomes ActionOutcome[] @relation("ActionOutcomeExpectedToObserved")
+  evaluationStatus OutcomeEvaluationStatus @default(UNKNOWN)
   predictedEffect String?
   actualEffect    String?
   predictedDurationMonths Float?
@@ -567,12 +569,14 @@ model StrategyOutcome {
   userId          String
   decisionRecordId String
   objectiveId     String?
-  outcomeType     String   @default("UNKNOWN")
+  outcomeType     OutcomeType @default(UNKNOWN)
   graphNodeId     String?
   confidence      Float?
-  confidenceLevel String?
+  confidenceLevel ConfidenceLevel?
   expectedOutcomeId String?
-  evaluationStatus String  @default("UNKNOWN")
+  expectedOutcome  StrategyOutcome? @relation("StrategyOutcomeExpectedToObserved", fields: [expectedOutcomeId], references: [id], onDelete: NoAction)
+  observedOutcomes StrategyOutcome[] @relation("StrategyOutcomeExpectedToObserved")
+  evaluationStatus OutcomeEvaluationStatus @default(UNKNOWN)
   strategyFollowed String  @default("UNKNOWN")
   objectiveAchieved String @default("UNKNOWN")
   trajectoryBecameViable String @default("UNKNOWN")
@@ -595,4 +599,35 @@ model StrategyOutcome {
   @@index([outcomeType])
   @@index([evaluationStatus])
   @@index([expectedOutcomeId])
+}
+
+enum OutcomeType {
+  ELIGIBILITY_OPENED
+  ROUTE_UNLOCKED
+  APPLICATION_SUBMITTED
+  APPLICATION_APPROVED
+  RESIDENCE_GRANTED
+  CITIZENSHIP_GRANTED
+  CREDENTIAL_RECOGNIZED
+  LANGUAGE_ACHIEVED
+  CAPABILITY_ACQUIRED
+  EMPLOYMENT_GAINED
+  INCOME_CHANGED
+  DOCUMENT_OBTAINED
+  OTHER
+  UNKNOWN
+}
+
+enum OutcomeEvaluationStatus {
+  ACHIEVED
+  PARTIALLY_ACHIEVED
+  NOT_ACHIEVED
+  UNKNOWN
+}
+
+enum ConfidenceLevel {
+  HIGH
+  MEDIUM
+  LOW
+  UNKNOWN
 }
