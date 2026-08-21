@@ -1042,3 +1042,57 @@ Stage Summary:
 - Historical strategies remain immutable.
 - Existing N0.4b infrastructure extended, not duplicated.
 - Tests: 583/583 pass. Lint clean. Typecheck clean.
+
+---
+Task ID: N0.7-hardening
+Agent: main (lead architect)
+Task: N0.7 architectural hardening — fix client-controlled historical strategy, fabricated confidence, text-based type derivation, missing expected/observed identity, graph linkage integrity, temporal determinism, strategy/action symmetry.
+
+Work Log:
+- Reconciled: local = GitHub = production = 36fbd0f. Audited actual code.
+- PRIMARY FAILURE confirmed: /api/actions/route.ts line 45 accepted `strategy?: Strategy` from the client body, line 88 used `strategy ?? null` for prediction derivation. A forged client strategy could influence expected outcomes.
+- FIXED /api/actions/route.ts:
+  - Removed `strategy` from the request body interface. The route now resolves the historical strategy SERVER-SIDE from the DecisionRecord (verified by userId ownership).
+  - Reconstructs the historical DecisionGraph from the snapshot via buildDecisionGraph().
+  - All prediction data (predictedEffect, predictedCostUSD, etc.) comes from the server-resolved historical strategy. A forged client strategy has ZERO effect.
+  - Outcome type derived from the graph (deriveOutcomeTypeFromGraph), not text.
+  - Confidence is qualitative (deriveConfidenceLevel), not fabricated numeric.
+  - Expected dates derive from record.createdAt (immutable), not new Date().
+  - graphNodeId only set when validateGraphNodeLinkage confirms the node exists.
+- ADDED expectedOutcomeId field to ActionOutcome + StrategyOutcome (nullable, backward compat). Observed outcomes now explicitly reference the exact expected outcome event they evaluate. Indexed for efficient lookup.
+- REMOVED fabricated confidence: deleted the 0.8/0.5/0.2/0.1 confidenceMap. Added ConfidenceLevel type (HIGH/MEDIUM/LOW/UNKNOWN) + confidenceLevel field. deriveOutcomeConfidence() deprecated (returns null). deriveConfidenceLevel() uses the WORST uncertainty dimension, conservative.
+- ADDED graph-based outcome type derivation:
+  - deriveOutcomeTypeFromGraph() — uses the graph's ACTION→LEADS_TO→OUTCOME edges + outcome node provenance. Falls back to UNKNOWN when the graph doesn't provide a relationship.
+  - deriveStrategyOutcomeTypeFromGraph() — uses the graph's OUTCOME node for the best trajectory.
+  - Text-based deriveOutcomeTypeFromAction() retained but NOT used by the hardened routes.
+- ADDED graph node linkage validation:
+  - validateGraphNodeLinkage() — verifies node exists + type matches.
+  - validateGraphEdge() — verifies exact edge existence + direction.
+  - graphNodeId is only set when the node actually exists in the historical graph.
+- FIXED temporal determinism: expected dates derive from the immutable adoption timestamp (record.createdAt), not new Date(). Same strategy + adoption date → same expected date regardless of wall-clock time.
+- FIXED strategy/action symmetry: strategy-level outcome route now uses N0.7 semantics (outcomeType, evaluationStatus, expectedOutcomeId, confidenceLevel, graphNodeId) — symmetric with the action-level route. Both resolve the historical strategy server-side, compute deterministic evaluationStatus, and enforce provenance integrity.
+- ENHANCED provenance integrity: validateProvenance() now accepts both USER_CONFIRMED (N0.7) and USER_REPORTED (N0.4b compat) from clients, but still rejects EXTERNAL_VERIFICATION from client submissions.
+- WROTE 29 new hardening tests (583 → 612):
+  - Historical strategy integrity: forged strategy cannot alter predictions, createExpectedOutcomes uses only its input strategy
+  - Outcome identity: ExpectedOutcomeRecord has no expectedOutcomeId (only observed outcomes reference it)
+  - Graph integrity: deriveOutcomeTypeFromGraph returns UNKNOWN for non-existent nodes, no LEADS_TO edges; validateGraphNodeLinkage rejects non-existent + type-mismatched nodes; validateGraphEdge verifies direction; graphNodeId only set when node exists
+  - Epistemic integrity: no fabricated confidence, qualitative uncertainty preserved, UNKNOWN remains UNKNOWN, missing observation ≠ failure
+  - Temporal integrity: expected dates derive from immutable adoption timestamp, change when adoption date changes
+  - Provenance integrity: client cannot claim EXTERNAL_VERIFICATION/EXTERNALLY_VERIFIED, server can, USER_REPORTED/USER_CONFIRMED accepted
+  - Immutability: same inputs → same idempotency keys, distinct observations → distinct keys
+  - Strategy/action symmetry: both use N0.7 evaluation semantics, both map MATCHED→ACHIEVED
+  - No adaptive learning: no side effects, no probability/learning signal
+- Ran lint (clean) + typecheck (clean) + tests (612/612 pass).
+- Committed 1d69d24 + pushed to GitHub. CI succeeded (lint ✅, tests ✅ 612/612, build ✅, prisma db push ✅, deploy ✅).
+- PRODUCTION ALIGNED: Local = GitHub = Production = 1d69d24. dbConnected=true. /api/health returns 200.
+- Verified production APIs: /api/strategy/test/outcomes returns 401 (auth enforced), /api/actions returns 401 (auth enforced).
+
+Stage Summary:
+- N0.7 architectural hardening COMPLETE.
+- The authoritative chain is now structurally trustworthy:
+  Historical Strategy → Historical DecisionGraph → Expected Outcome → Observed Outcome → Deterministic Evaluation
+- Client input ≠ historical truth (server resolves from DecisionRecord)
+- Current strategy ≠ historical strategy (immutable snapshot)
+- Text similarity ≠ causal relationship (graph-derived types)
+- Numeric confidence ≠ evidence (qualitative ConfidenceLevel)
+- Passing tests ≠ architectural correctness (verified by code inspection)
