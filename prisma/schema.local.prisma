@@ -38,6 +38,7 @@ model User {
 
   persons        Person[]
   waitlist       WaitlistEntry[]
+  mobileSessions MobileSession[]
 }
 
 enum Role {
@@ -630,4 +631,20 @@ enum ConfidenceLevel {
   MEDIUM
   LOW
   UNKNOWN
+}
+
+model MobileSession {
+  id              String    @id @default(cuid())
+  userId          String
+  tokenHash       String    @unique
+  deviceId        String?
+  createdAt       DateTime  @default(now())
+  expiresAt       DateTime
+  revokedAt       DateTime?
+  lastRotatedAt   DateTime?
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([tokenHash])
 }

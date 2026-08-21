@@ -39,6 +39,7 @@ model User {
 
   persons        Person[]
   waitlist       WaitlistEntry[]
+  mobileSessions MobileSession[]
 }
 
 enum Role {
@@ -783,4 +784,40 @@ enum ConfidenceLevel {
   MEDIUM
   LOW
   UNKNOWN
+}
+
+// ---------------------------------------------------------------------------
+// P4.0 — MOBILE AUTHENTICATION SESSIONS
+// ---------------------------------------------------------------------------
+
+/// A mobile refresh token session. Refresh tokens are:
+///   - cryptographically random + opaque (never JWT)
+///   - stored hashed (SHA-256, not plaintext)
+///   - single-use / rotated (each refresh invalidates the old token)
+///   - revocable (logout sets revokedAt)
+///   - expiry-bound (30 days)
+///   - associated with a user + optional device
+///
+/// If a previously-rotated refresh token is reused, the entire session is
+/// revoked (refresh token replay detection).
+model MobileSession {
+  id              String    @id @default(cuid())
+  userId          String
+  /// SHA-256 hash of the refresh token. Never store the plaintext token.
+  tokenHash       String    @unique
+  /// Optional device identifier (metadata only — NOT authorization authority).
+  deviceId        String?
+  createdAt       DateTime  @default(now())
+  /// When this session expires (30 days from creation).
+  expiresAt       DateTime
+  /// When this session was explicitly revoked (logout, password change, replay).
+  revokedAt       DateTime?
+  /// When the refresh token was last rotated.
+  lastRotatedAt   DateTime?
+  /// The user this session belongs to.
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([tokenHash])
 }
